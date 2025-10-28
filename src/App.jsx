@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 
 const ELEMENTS = ["fire","water","earth","air","light","metal","heart"];
 
+// helper to create a zeroed tally for all elements
+const blankTally = () => ({ fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 });
+
 const loadState = () => {
   try {
     const raw = localStorage.getItem("hc-state");
@@ -12,7 +15,8 @@ const saveState = (s) => localStorage.setItem("hc-state", JSON.stringify(s));
 
 const initialState = {
   candies: { fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 },
-  egg: { progress: 0, cost: 5, element: null },
+  // add a tally so we know what was FED during incubation
+  egg: { progress: 0, cost: 5, element: null, tally: blankTally() },
   creature: { stage: 0, baseElement: null }
 };
 
@@ -33,32 +37,40 @@ export default function App() {
     setState(s => ({ ...s, candies: { ...s.candies, [el]: s.candies[el]+1 }}));
   }
 
+  // increment egg.tally when feeding so hatch uses what was actually fed
   function feedCandy(el) {
     setState(s=>{
       if (s.candies[el] <= 0 || s.creature.stage>0) return s;
       const next = structuredClone(s);
       next.candies[el]--;
       next.egg.progress = Math.min(next.egg.cost, next.egg.progress+1);
+      next.egg.tally[el] += 1; // record feed for hatch element decision
       return next;
     });
   }
 
+  // choose dominant element from tally (not remaining bag), then reset tally
   function hatchIfReady() {
     setState(s=>{
       if (s.creature.stage>0 || s.egg.progress < s.egg.cost) return s;
-      const dominant = pickDominantElement(s.candies, ELEMENTS) || "fire";
-      return { ...s, egg:{...s.egg,progress:0,element:dominant}, creature:{stage:0,baseElement:dominant}};
+      const dominant = pickDominantElement(s.egg.tally, ELEMENTS) || "fire";
+      return {
+        ...s,
+        egg:{ progress:0, cost:s.egg.cost, element:dominant, tally: blankTally() },
+        creature:{ stage:0, baseElement:dominant}
+      };
     });
   }
 
+  // evolve cost reduced to 10 and reflected everywhere
   function evolve() {
     setState(s=>{
       if (!s.creature.baseElement || s.creature.stage!==0) return s;
       const base=s.creature.baseElement;
-      if (s.candies[base]<10) return s;
+      if (s.candies[base] < 10) return s;
       const next=structuredClone(s);
-      next.candies[base]-=10;
-      next.creature.stage=1;
+      next.candies[base] -= 10;
+      next.creature.stage = 1;
       return next;
     });
   }
@@ -123,7 +135,15 @@ export default function App() {
         <div className="big">Evolve</div>
         <div className="small">10 candies needed</div>
         <div className="row" style={{marginTop:8}}>
-          <button className="btn" onClick={evolve} disabled={!state.creature.baseElement || state.creature.stage!==0 || state.candies[state.creature.baseElement]<20}>
+          <button
+            className="btn"
+            onClick={evolve}
+            disabled={
+              !state.creature.baseElement ||
+              state.creature.stage !== 0 ||
+              state.candies[state.creature.baseElement] < 10
+            }
+          >
             Evolve
           </button>
           <button className="btn" onClick={()=>setState(initialState)}>Reset</button>
