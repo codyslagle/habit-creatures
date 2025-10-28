@@ -44,13 +44,27 @@ const ELEMENT_BADGE_BG = {
 // XP per difficulty
 const XP_BY_DIFFICULTY = { easy: 5, med: 10, hard: 20 };
 
-// Level curve
-function levelFromXP(xp) {
-  return Math.max(1, Math.floor((xp || 0) / 100) + 1);
+/* ===== New level curve (mobile-friendly) =====
+   XP_to_level(N) = round(100 * 1.25^(N-1)), no cap.
+   We compute level from total XP using cumulative thresholds. */
+const xpToLevel = (level) => Math.round(100 * Math.pow(1.25, Math.max(0, level - 1)));
+function levelInfoFromTotalXP(totalXP) {
+  let level = 1;
+  let spent = 0;
+  let need = xpToLevel(level);
+  while (totalXP >= spent + need) {
+    spent += need;
+    level += 1;
+    need = xpToLevel(level);
+  }
+  return {
+    level,
+    currentIntoLevel: totalXP - spent,
+    neededForLevel: need,
+    xpToNext: need - (totalXP - spent)
+  };
 }
-function nextLevelAt(level) {
-  return level * 100;
-}
+const nextLevelAt = (level) => xpToLevel(level); // cost to go from level -> level+1
 
 // Date helpers
 function localDateStr(d = new Date()) {
@@ -79,20 +93,23 @@ const DAY_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
 /* ===================== Save & Migration ===================== */
 
-const SAVE_VERSION = 4;
+const SAVE_VERSION = 5;
 const STORAGE_KEY = "hc-state";
 
 const initialState = {
   candies: { fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 },
 
-  // NEW: multi-slot creature storage
+  // Multi-slot creature storage (unlimited)
   stable: [
     {
       egg: { progress: 0, cost: 5, element: null, tally: blankTally() },
       creature: { speciesId: null, nickname: null, happiness: null }
     }
   ],
-  activeIndex: 0,
+
+  // Active Team of indices into `stable` (max 6 shown on home carousel)
+  activeTeam: [0],
+  activeIndex: 0, // index within activeTeam (0..activeTeam.length-1)
 
   tasks: [], // see newTask()
 
@@ -100,12 +117,14 @@ const initialState = {
     lastSeenISO: null,
     saveVersion: SAVE_VERSION,
     lastActionLocalDate: null,
+    lastGemAwardDayKey: null,
     streak: 0,
     xpTotal: 0,
     xpByElement: { fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 },
     devOffsetDays: 0,
     weekStartDay: 0, // user preference: 0=Sun .. 6=Sat
-    level: 1
+    level: 1,       // redundant but kept for compatibility
+    gems: 0
   }
 };
 
@@ -121,7 +140,9 @@ function withDefaults(s) {
       xpByElement: { ...base.meta.xpByElement, ...(s?.meta?.xpByElement || {}) },
       devOffsetDays: s?.meta?.devOffsetDays || 0,
       weekStartDay: (s?.meta?.weekStartDay ?? 0),
-      level: s?.meta?.level ?? base.meta.level
+      level: s?.meta?.level ?? base.meta.level,
+      gems: s?.meta?.gems ?? 0,
+      lastGemAwardDayKey: s?.meta?.lastGemAwardDayKey ?? null
     }
   };
 
@@ -135,11 +156,19 @@ function withDefaults(s) {
         creature: oldCreature ? { ...base.stable[0].creature, ...oldCreature } : base.stable[0].creature
       }
     ];
-    next.activeIndex = 0;
   } else {
     next.stable = s.stable;
-    next.activeIndex = s.activeIndex ?? 0;
   }
+
+  // Active Team migration
+  if (!Array.isArray(s?.activeTeam) || s.activeTeam.length === 0) {
+    next.activeTeam = [0];
+  } else {
+    // clamp indices to stable length
+    next.activeTeam = s.activeTeam.filter(i => typeof i === "number" && i >= 0 && i < next.stable.length);
+    if (next.activeTeam.length === 0) next.activeTeam = [0];
+  }
+  next.activeIndex = (typeof s?.activeIndex === "number") ? Math.max(0, Math.min(next.activeTeam.length - 1, s.activeIndex)) : 0;
 
   // Tasks
   next.tasks = Array.isArray(s?.tasks) ? s.tasks.map(migrateTask) : [];
@@ -186,8 +215,6 @@ function pickDominantElement(availableCandies, validElements) {
 /* ===================== Tasks ===================== */
 
 // frequency: 'once' | 'daily' | 'weekly' | 'days' (specific days)
-// weeklyDay: 0..6 optional for 'weekly'; if null → any day that week
-// daysOfWeek: array of 0..6 used for 'days'
 function newTask({ title, element, difficulty, frequency, weeklyDay, daysOfWeek }) {
   const id = `task_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
   return {
@@ -252,6 +279,8 @@ export default function App() {
   const [showDevPanel, setShowDevPanel] = useState(false);
   const [tasksCollapsedToday, setTasksCollapsedToday] = useState(false);
   const [tasksCollapsedAll, setTasksCollapsedAll] = useState(false);
+  const [tasksCollapsedCompleted, setTasksCollapsedCompleted] = useState(true); // default collapsed
+  const [showSettings, setShowSettings] = useState(false);
 
   // Task form UI
   const [taskTitle, setTaskTitle] = useState("");
@@ -271,6 +300,11 @@ export default function App() {
 
   // Level-up toast
   const [levelToast, setLevelToast] = useState(null); // { level, xpToNext }
+
+  // Status bar UI
+  const [showXPTooltip, setShowXPTooltip] = useState(false);
+  const [showShop, setShowShop] = useState(false);
+  const [showManageTeam, setShowManageTeam] = useState(false);
 
   /* ----- DEX load ----- */
   useEffect(() => {
@@ -301,11 +335,13 @@ export default function App() {
   const todayDayIndex = todayDate.getDay();
   const wkKey = weekKeyWithOffset(state.meta.devOffsetDays, state.meta.weekStartDay);
 
-  /* ----- Active slot refs ----- */
-  const active = state.stable[state.activeIndex] ?? state.stable[0];
+  /* ----- Active Team mapping ----- */
+  const team = state.activeTeam.length ? state.activeTeam : [0];
+  const activeStableIndex = team[state.activeIndex] ?? team[0];
+  const active = state.stable[activeStableIndex] ?? state.stable[0];
   const activeEgg = active.egg;
   const activeCreature = active.creature;
-  const creature = activeCreature.speciesId ? dex.getSpecies(activeCreature.speciesId) : null;
+  const creature = activeCreature?.speciesId ? dex.getSpecies(activeCreature.speciesId) : null;
 
   const sprite = useMemo(
     () => (creature ? (creature.sprite || `/sprites/${creature.id}.png`) : "/egg.png"),
@@ -317,33 +353,84 @@ export default function App() {
   function setActiveSlot(updater) {
     setState((s) => {
       const next = structuredClone(s);
-      const slot = next.stable[next.activeIndex];
-      updater(slot);
+      const stableIndex = (next.activeTeam[next.activeIndex] ?? 0);
+      const slot = next.stable[stableIndex];
+      updater(slot, stableIndex, next);
       return next;
     });
   }
+
   function gotoPrev() {
-    setState(s => ({ ...s, activeIndex: (s.activeIndex - 1 + s.stable.length) % s.stable.length }));
+    setState(s => ({
+      ...s,
+      activeIndex: (s.activeIndex - 1 + s.activeTeam.length) % s.activeTeam.length
+    }));
   }
   function gotoNext() {
-    setState(s => ({ ...s, activeIndex: (s.activeIndex + 1) % s.stable.length }));
+    setState(s => ({
+      ...s,
+      activeIndex: (s.activeIndex + 1) % s.activeTeam.length
+    }));
   }
-  function addEggSlot() { // dev helper
+
+  function addEggSlotDev() { // dev helper (free)
     setState((s)=>{
       const next = structuredClone(s);
-      if (next.stable.length >= 3) return s; // soft cap for now
       next.stable.push({
         egg: { progress: 0, cost: 5, element: null, tally: blankTally() },
         creature: { speciesId: null, nickname: null, happiness: null }
       });
-      next.activeIndex = next.stable.length - 1;
+      const newIndex = next.stable.length - 1;
+      // If team has space (<6), auto-add dev egg to team and focus it
+      if (next.activeTeam.length < 6) {
+        next.activeTeam.push(newIndex);
+        next.activeIndex = next.activeTeam.length - 1;
+      }
+      return next;
+    });
+  }
+
+  function buyEgg() {
+    setState((s)=>{
+      const next = structuredClone(s);
+      if ((next.meta.gems || 0) < 20) return s; // not enough
+      next.meta.gems -= 20;
+      next.stable.push({
+        egg: { progress: 0, cost: 5, element: null, tally: blankTally() },
+        creature: { speciesId: null, nickname: null, happiness: null }
+      });
+      const newIdx = next.stable.length - 1;
+      if (next.activeTeam.length < 6) {
+        next.activeTeam.push(newIdx);
+        next.activeIndex = next.activeTeam.length - 1;
+      }
+      return next;
+    });
+  }
+
+  function openManageTeam() { setShowManageTeam(true); }
+  function toggleTeamMember(stableIndex) {
+    setState((s)=>{
+      const next = structuredClone(s);
+      const pos = next.activeTeam.indexOf(stableIndex);
+      if (pos >= 0) {
+        // remove
+        next.activeTeam.splice(pos, 1);
+        if (next.activeIndex >= next.activeTeam.length) next.activeIndex = Math.max(0, next.activeTeam.length - 1);
+      } else {
+        if (next.activeTeam.length >= 6) return s; // max 6
+        next.activeTeam.push(stableIndex);
+        next.activeIndex = next.activeTeam.length - 1;
+      }
+      if (next.activeTeam.length === 0) next.activeTeam = [0];
       return next;
     });
   }
 
   /* ===================== Core Actions ===================== */
 
-  function maybeBumpStreak(next) {
+  function maybeBumpStreakAndGems(next) {
+    // Streak bump + 1 random candy on first action of a calendar day
     if (next.meta.lastActionLocalDate !== todayKey) {
       next.meta.streak = (next.meta.streak || 0) + 1;
       const pick = ELEMENTS[Math.floor(Math.random() * ELEMENTS.length)];
@@ -352,17 +439,27 @@ export default function App() {
     }
   }
 
+  function maybeAwardDailyGems(next) {
+    if (next.meta.lastGemAwardDayKey !== todayKey) {
+      next.meta.gems = (next.meta.gems || 0) + 20;
+      next.meta.lastGemAwardDayKey = todayKey;
+    }
+  }
+
   function awardXP(next, xpGain) {
     const prevTotal = next.meta.xpTotal || 0;
-    const prevLevel = levelFromXP(prevTotal);
+    const prevInfo = levelInfoFromTotalXP(prevTotal);
     const newTotal = prevTotal + xpGain;
-    const newLevel = levelFromXP(newTotal);
     next.meta.xpTotal = newTotal;
-    if (newLevel > prevLevel) {
-      next.meta.level = newLevel;
+
+    const newInfo = levelInfoFromTotalXP(newTotal);
+    if (newInfo.level > prevInfo.level) {
+      next.meta.level = newInfo.level;
       setTimeout(() => {
-        setLevelToast({ level: newLevel, xpToNext: nextLevelAt(newLevel) - newTotal });
+        setLevelToast({ level: newInfo.level, xpToNext: newInfo.xpToNext });
       }, 0);
+    } else {
+      next.meta.level = newInfo.level;
     }
   }
 
@@ -370,7 +467,7 @@ export default function App() {
   function earnCandy(el) {
     setState((s) => {
       const next = structuredClone(s);
-      maybeBumpStreak(next);
+      maybeBumpStreakAndGems(next); // gems can also award here if first action
       next.candies[el] = (next.candies[el] || 0) + 1;
       awardXP(next, 1);
       next.meta.xpByElement[el] = (next.meta.xpByElement[el] || 0) + 1;
@@ -382,7 +479,7 @@ export default function App() {
   function feedCandy(el) {
     setState((s) => {
       const next = structuredClone(s);
-      const slot = next.stable[next.activeIndex];
+      const slot = next.stable[next.activeTeam[next.activeIndex] ?? 0];
       if (slot.creature.speciesId) return s;
       if (slot.egg.progress >= slot.egg.cost) return s;
       if ((next.candies[el]||0) <= 0) return s;
@@ -396,7 +493,7 @@ export default function App() {
   function hatchIfReady() {
     setState((s) => {
       const next = structuredClone(s);
-      const slot = next.stable[next.activeIndex];
+      const slot = next.stable[next.activeTeam[next.activeIndex] ?? 0];
       if (slot.creature.speciesId || slot.egg.progress < slot.egg.cost) return s;
       const dominant = pickDominantElement(slot.egg.tally, ELEMENTS) || "fire";
       const base = dex.findBaseByElement(dominant);
@@ -429,7 +526,7 @@ export default function App() {
   function confirmEvolution(chosen) {
     setState((s) => {
       const next = structuredClone(s);
-      const slot = next.stable[next.activeIndex];
+      const slot = next.stable[next.activeTeam[next.activeIndex] ?? 0];
       if (!slot.creature.speciesId) return s;
       Object.entries(chosen.cost || {}).forEach(([el, amt]) => {
         next.candies[el] = Math.max(0, (next.candies[el] || 0) - amt);
@@ -484,7 +581,11 @@ export default function App() {
       const next = structuredClone(s);
       const t = next.tasks[idx];
 
-      maybeBumpStreak(next);
+      // Streak & gems (first completion of day)
+      maybeBumpStreakAndGems(next);
+      maybeAwardDailyGems(next);
+
+      // Reward: 1 candy of task's element + XP
       next.candies[t.element] = (next.candies[t.element] || 0) + 1;
 
       const xpGain = XP_BY_DIFFICULTY[t.difficulty] || 0;
@@ -559,6 +660,10 @@ export default function App() {
     })
     .sort(bySort);
 
+  /* ===================== Level values (for status bar) ===================== */
+  const lvlInfo = levelInfoFromTotalXP(state.meta.xpTotal || 0);
+  const xpPct = Math.max(0, Math.min(100, Math.round((lvlInfo.currentIntoLevel / lvlInfo.neededForLevel) * 100)));
+
   /* ===================== Render ===================== */
 
   const progressPct = Math.round((activeEgg.progress / activeEgg.cost) * 100);
@@ -577,7 +682,7 @@ export default function App() {
     const value = (e.target.value || "").trim();
     setState((s) => {
       const next = structuredClone(s);
-      const slot = next.stable[next.activeIndex];
+      const slot = next.stable[next.activeTeam[next.activeIndex] ?? 0];
       if (!slot.creature.speciesId) return s;
       slot.creature.nickname = value || null;
       return next;
@@ -609,13 +714,38 @@ export default function App() {
   return (
     <div className="container">
       {/* Header */}
-      <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card" style={{ marginBottom: 10 }}>
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
           <div className="big">Growlings — Habit Hatchlings (MVP)</div>
           <div className="small" style={{ textAlign: "right" }}>
-            Streak: <strong>{state.meta.streak || 0}</strong><br />
-            XP: <strong>{state.meta.xpTotal || 0}</strong>
+            {/* Keeping minimal here; main stats below in status bar */}
+            Last seen: <strong>{state.meta.lastSeenISO ? state.meta.lastSeenISO.slice(0,10) : "—"}</strong>
           </div>
+        </div>
+      </div>
+
+      {/* Status Bar: Streak | Level N | XP bar (clickable) | Gems + Shop */}
+      <div className="card" style={{ marginBottom: 12, padding: "8px 12px" }}>
+        <div className="row" style={{ alignItems:"center", gap:10, flexWrap:"wrap" }}>
+          <span className="badge">Streak: {state.meta.streak || 0}</span>
+          <span className="badge">Level {lvlInfo.level}</span>
+
+          <div
+            className="progress"
+            onClick={()=>setShowXPTooltip(v=>!v)}
+            title="Click to show XP details"
+            style={{ width: 220, cursor: "pointer" }}
+          >
+            <div style={{ width: `${xpPct}%` }} />
+          </div>
+          {showXPTooltip && (
+            <div className="small" style={{ opacity: 0.9 }}>
+              {lvlInfo.currentIntoLevel} / {lvlInfo.neededForLevel} XP (Level {lvlInfo.level} → {lvlInfo.level+1})
+            </div>
+          )}
+
+          <span className="badge">💎 {state.meta.gems || 0}</span>
+          <button className="btn" onClick={()=>setShowShop(true)}>Shop</button>
         </div>
       </div>
 
@@ -623,13 +753,13 @@ export default function App() {
       <div className="card" style={{ marginBottom: 12 }}>
         <div className="row" style={{ alignItems:"center", justifyContent:"space-between" }}>
           <div className="big">Creature Card</div>
-          <div className="row" style={{ gap:6 }}>
+          <div className="row" style={{ gap:6, alignItems:"center" }}>
             <button className="btn" onClick={gotoPrev} title="Previous">◀</button>
             <div className="small" style={{ alignSelf:"center" }}>
-              Slot {state.activeIndex+1} / {state.stable.length}
+              Team Slot {state.activeIndex+1} / {state.activeTeam.length}
             </div>
             <button className="btn" onClick={gotoNext} title="Next">▶</button>
-            <button className="btn" onClick={addEggSlot} title="Add Egg (dev)">+ Egg</button>
+            <button className="btn" onClick={openManageTeam} title="Manage Team">Manage Team</button>
             <button className="btn" onClick={() => setShowCreatureCard(v => !v)}>
               {showCreatureCard ? "Hide" : "Show"}
             </button>
@@ -780,7 +910,7 @@ export default function App() {
             </select>
           </div>
         </div>
-        <div className="small">Create tasks, then complete them to earn candies and XP.</div>
+        <div className="small">Create tasks, then complete them to earn candies, XP, and daily 💎.</div>
 
         {/* Add task form */}
         <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
@@ -848,33 +978,45 @@ export default function App() {
           )}
         </div>
 
-        {/* Completed Today */}
+        {/* Completed Today (collapsible, default collapsed) */}
         <div style={{ marginTop: 14 }}>
           <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
             <div className="small" style={{ fontWeight:700 }}>Completed Today</div>
+            <button className="btn" onClick={()=>setTasksCollapsedCompleted(v=>!v)}>{tasksCollapsedCompleted ? "Expand" : "Collapse"}</button>
           </div>
-          <div style={{ marginTop: 8, display:"grid", gap:8 }}>
-            {completedToday.length === 0 ? (
-              <div className="small" style={{ opacity:0.8 }}>Nothing here yet.</div>
-            ) : completedToday.map((t) => (
-              <div key={t.id} className="row" style={{
-                justifyContent:"space-between",
-                alignItems:"center",
-                padding:"6px 10px",
-                border:"1px solid rgba(255,255,255,0.12)",
-                borderRadius:8,
-                opacity:0.75
-              }}>
-                <div className="small" style={{ fontWeight:700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                  {t.title}
-                </div>
-                <div className="row" style={{ gap:6, flexWrap:"wrap" }}>
-                  <span className="badge" style={{ background: ELEMENT_BADGE_BG[t.element] }}>{cap(t.element)}</span>
-                  <span className="badge">{t.frequency === "weekly" ? "This week done" : "Done today"}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+          {!tasksCollapsedCompleted && (
+            <div style={{ marginTop: 8, display:"grid", gap:8 }}>
+              {completedToday.length === 0 ? (
+                <div className="small" style={{ opacity:0.8 }}>Nothing here yet.</div>
+              ) : completedToday.map((t) => (
+                editingTaskId === t.id && editDraft
+                ? renderTaskRow(t) // reuse editor UI
+                : (
+                  <div
+                    key={t.id}
+                    className="row"
+                    onClick={()=>startEditTask(t)} // click-to-expand editor
+                    style={{
+                      justifyContent:"space-between",
+                      alignItems:"center",
+                      padding:"6px 10px",
+                      border:"1px solid rgba(255,255,255,0.12)",
+                      borderRadius:8,
+                      opacity:0.9,
+                      cursor: "pointer"
+                    }}>
+                    <div className="small" style={{ fontWeight:700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                      {t.title}
+                    </div>
+                    <div className="row" style={{ gap:6, flexWrap:"wrap" }}>
+                      <span className="badge" style={{ background: ELEMENT_BADGE_BG[t.element] }}>{cap(t.element)}</span>
+                      <span className="badge">{t.frequency === "weekly" ? "This week done" : "Done today"}</span>
+                    </div>
+                  </div>
+                )
+              ))}
+            </div>
+          )}
         </div>
 
         {/* All (collapsible) */}
@@ -911,20 +1053,35 @@ export default function App() {
         </div>
       </div>
 
-      {/* Settings */}
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="big">Settings</div>
-        <div className="row" style={{ marginTop:8, gap:8, alignItems:"center", flexWrap:"wrap" }}>
-          <div className="small" style={{ opacity:0.9 }}>Week starts on:</div>
-          <select
-            className="input"
-            value={state.meta.weekStartDay}
-            onChange={(e)=>setState(s=>({ ...s, meta:{ ...s.meta, weekStartDay: Number(e.target.value) } }))}
-          >
-            {DAY_SHORT.map((d,i)=><option key={i} value={i}>{d}</option>)}
-          </select>
+      {/* Settings (hidden behind floating ⚙️) */}
+      {showSettings && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="big">Settings</div>
+          <div className="row" style={{ marginTop:8, gap:8, alignItems:"center", flexWrap:"wrap" }}>
+            <div className="small" style={{ opacity:0.9 }}>Week starts on:</div>
+            <select
+              className="input"
+              value={state.meta.weekStartDay}
+              onChange={(e)=>setState(s=>({ ...s, meta:{ ...s.meta, weekStartDay: Number(e.target.value) } }))}
+            >
+              {DAY_SHORT.map((d,i)=><option key={i} value={i}>{d}</option>)}
+            </select>
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* Floating gear */}
+      <button
+        className="btn"
+        onClick={()=>setShowSettings(v=>!v)}
+        title="Settings"
+        style={{
+          position:"fixed", right:16, bottom:16, zIndex:9999,
+          borderRadius:24, padding:"10px 14px"
+        }}
+      >
+        ⚙️
+      </button>
 
       {/* Developer */}
       <div className="card" style={{ marginBottom: 12 }}>
@@ -943,6 +1100,7 @@ export default function App() {
               {ELEMENTS.map(el => (
                 <button key={el} className="btn" onClick={() => earnCandy(el)}>+1 {cap(el)} (dev)</button>
               ))}
+              <button className="btn" onClick={addEggSlotDev}>+ Egg (dev, free)</button>
             </div>
           </>
         )}
@@ -1002,10 +1160,87 @@ export default function App() {
               Congrats—You reached <strong>Level {levelToast.level}</strong>! 🎉
             </div>
             <div className="small" style={{ opacity:0.85, marginTop:4 }}>
-              {levelToast.xpToNext <= 0 ? "Max level for this curve." : `${levelToast.xpToNext} XP to next level.`}
+              {levelToast.xpToNext <= 0 ? "Keep going!" : `${levelToast.xpToNext} XP to next level.`}
             </div>
             <div className="row" style={{ marginTop:12, justifyContent:"center" }}>
               <button className="btn" onClick={()=>setLevelToast(null)}>Nice!</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Shop Modal */}
+      {showShop && (
+        <div style={{
+          position:"fixed", inset:0, background:"rgba(0,0,0,0.5)",
+          display:"flex", alignItems:"center", justifyContent:"center", zIndex:9999
+        }}>
+          <div className="card" style={{ maxWidth:360, width:"90%", padding:16 }}>
+            <div className="big">Shop</div>
+            <div className="small" style={{ marginTop:6, opacity:0.9 }}>
+              💎 {state.meta.gems || 0} gems available
+            </div>
+            <div className="row" style={{ marginTop:12, gap:8, alignItems:"center", justifyContent:"space-between" }}>
+              <div className="row" style={{ gap:8, alignItems:"center" }}>
+                <img src="/egg.png" width="24" height="24" style={{ imageRendering:"pixelated" }} alt="Egg" />
+                <div className="small"><strong>Buy Egg</strong> — 20 💎</div>
+              </div>
+              <button className="btn" disabled={(state.meta.gems||0) < 20} onClick={buyEgg}>
+                {(state.meta.gems||0) < 20 ? "Not enough" : "Buy"}
+              </button>
+            </div>
+            <div className="row" style={{ marginTop:12, justifyContent:"flex-end" }}>
+              <button className="btn" onClick={()=>setShowShop(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manage Team Modal */}
+      {showManageTeam && (
+        <div style={{
+          position:"fixed", inset:0, background:"rgba(0,0,0,0.5)",
+          display:"flex", alignItems:"center", justifyContent:"center", zIndex:9999
+        }}>
+          <div className="card" style={{ maxWidth:520, width:"95%", padding:16 }}>
+            <div className="big">Manage Team (max 6)</div>
+            <div className="small" style={{ marginTop:6, opacity:0.9 }}>
+              Select which eggs/creatures show on your home carousel.
+            </div>
+            <div style={{
+              marginTop:12, display:"grid",
+              gridTemplateColumns:"repeat(auto-fill, minmax(120px, 1fr))",
+              gap:8
+            }}>
+              {state.stable.map((slot, idx) => {
+                const chosen = state.activeTeam.includes(idx);
+                const sp = slot.creature?.speciesId ? dex.getSpecies(slot.creature.speciesId) : null;
+                const art = sp?.sprite || "/egg.png";
+                const label = sp?.name || "Egg";
+                return (
+                  <button
+                    key={idx}
+                    className="btn"
+                    onClick={() => toggleTeamMember(idx)}
+                    title={chosen ? "Remove from team" : "Add to team"}
+                    style={{
+                      display:"grid", gap:6, justifyItems:"center",
+                      border: chosen ? "2px solid #8ad" : "1px solid rgba(255,255,255,0.12)",
+                      borderRadius: 10, padding: 10
+                    }}
+                  >
+                    <img src={art} width="32" height="32" style={{ imageRendering:"pixelated" }} alt={label} />
+                    <div className="small" style={{ fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:100 }}>
+                      {label}
+                    </div>
+                    <div className="small" style={{ opacity:0.8 }}>{chosen ? "Selected" : "Tap to select"}</div>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="row" style={{ marginTop:12, justifyContent:"flex-end", gap:8 }}>
+              <div className="small" style={{ opacity:0.85 }}>Selected: {state.activeTeam.length} / 6</div>
+              <button className="btn" onClick={()=>setShowManageTeam(false)}>Done</button>
             </div>
           </div>
         </div>
