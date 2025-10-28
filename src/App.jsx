@@ -37,14 +37,17 @@ export default function App() {
     setState(s => ({ ...s, candies: { ...s.candies, [el]: s.candies[el]+1 }}));
   }
 
-  // increment egg.tally when feeding so hatch uses what was actually fed
+  // Prevent feeding beyond max; only tally/consume when there's room
   function feedCandy(el) {
     setState(s=>{
-      if (s.candies[el] <= 0 || s.creature.stage>0) return s;
+      // can't feed if creature already exists OR egg is already full
+      if (s.creature.stage > 0 || s.egg.progress >= s.egg.cost) return s;
+      if (s.candies[el] <= 0) return s;
+
       const next = structuredClone(s);
       next.candies[el]--;
-      next.egg.progress = Math.min(next.egg.cost, next.egg.progress+1);
-      next.egg.tally[el] += 1; // record feed for hatch element decision
+      next.egg.progress += 1;              // guaranteed < cost due to guard
+      next.egg.tally[el] += 1;             // record feed for hatch element decision
       return next;
     });
   }
@@ -62,7 +65,7 @@ export default function App() {
     });
   }
 
-  // evolve cost reduced to 10 and reflected everywhere
+  // evolve cost = 10
   function evolve() {
     setState(s=>{
       if (!s.creature.baseElement || s.creature.stage!==0) return s;
@@ -75,17 +78,25 @@ export default function App() {
     });
   }
 
+  // choose correct sprite by stage
   const sprite = useMemo(()=>{
-    if (!state.creature.baseElement) return "/egg.png";
-    return `/slime-${state.creature.baseElement}.png`;
-  }, [state.creature.baseElement]);
+    const el = state.creature.baseElement;
+    const stage = state.creature.stage;
+
+    if (!el) return "/egg.png";
+    if (stage === 0) return `/slime-${el}.png`;
+    if (stage === 1) return `/stage1-${el}.png`;
+
+    return "/egg.png"; // fallback until Stage 2 exists
+  }, [state.creature.baseElement, state.creature.stage]);
 
   const progressPct = Math.round((state.egg.progress/state.egg.cost)*100);
+  const eggIsFull = state.egg.progress >= state.egg.cost;
 
   return (
     <div className="container">
       <div className="card" style={{marginBottom:12}}>
-        <div className="big">Habit Creatures — MVP</div>
+        <div className="big">Growlings — Habit Hatchlings (MVP)</div>
         <div className="small">Tap tasks to earn candies. Feed to hatch.</div>
       </div>
 
@@ -93,10 +104,16 @@ export default function App() {
         <div className="row" style={{alignItems:"center",justifyContent:"space-between"}}>
           <div>
             <div className="small">Current</div>
-            <div className="big">{state.creature.baseElement ? (state.creature.stage===0?"Slime":"Stage 1") : "Egg"}</div>
+            <div className="big">
+              {!state.creature.baseElement
+                ? "Egg"
+                : state.creature.stage === 0
+                ? `${state.creature.baseElement} Slime`
+                : `${state.creature.baseElement} — Stage 1`}
+            </div>
           </div>
           <div className="sprite">
-            <img src={sprite} alt="creature" width="96" height="96"/>
+            <img src={sprite} alt="creature" width="64" height="64"/>
           </div>
         </div>
         <div style={{marginTop:12}}>
@@ -105,11 +122,20 @@ export default function App() {
           <div className="small" style={{marginTop:6}}>{state.egg.progress}/{state.egg.cost}</div>
           <div className="row" style={{marginTop:8}}>
             {ELEMENTS.map(el=>(
-              <button key={el} className="btn" disabled={!!state.creature.baseElement} onClick={()=>feedCandy(el)}>
+              <button
+                key={el}
+                className="btn"
+                disabled={!!state.creature.baseElement || eggIsFull}
+                onClick={()=>feedCandy(el)}
+              >
                 Feed {el}
               </button>
             ))}
-            <button className="btn" disabled={!!state.creature.baseElement || state.egg.progress<state.egg.cost} onClick={hatchIfReady}>
+            <button
+              className="btn"
+              disabled={!!state.creature.baseElement || !eggIsFull}
+              onClick={hatchIfReady}
+            >
               Hatch
             </button>
           </div>
