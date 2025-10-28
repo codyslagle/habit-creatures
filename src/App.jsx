@@ -55,9 +55,9 @@ export default function App() {
     setState(s=>{
       if (!s.creature.baseElement || s.creature.stage!==0) return s;
       const base=s.creature.baseElement;
-      if (s.candies[base]<20) return s;
+      if (s.candies[base]<10) return s;
       const next=structuredClone(s);
-      next.candies[base]-=20;
+      next.candies[base]-=10;
       next.creature.stage=1;
       return next;
     });
@@ -121,7 +121,7 @@ export default function App() {
 
       <div className="card">
         <div className="big">Evolve</div>
-        <div className="small">20 candies needed</div>
+        <div className="small">10 candies needed</div>
         <div className="row" style={{marginTop:8}}>
           <button className="btn" onClick={evolve} disabled={!state.creature.baseElement || state.creature.stage!==0 || state.candies[state.creature.baseElement]<20}>
             Evolve
