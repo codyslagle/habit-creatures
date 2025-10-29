@@ -3,10 +3,15 @@ base_whisple,0,air,,,Whisple,,s1_gustowl:air:5
 s1_gustowl,1,air,,air:5,Gustowl,base_whisple,s2_aerialove:air:5;heart:5 || s2_galeon:air:5;light:5
 s2_aerialove,2,air,heart,air:5;heart:5,Aerialove,s1_gustowl,
 s2_galeon,2,air,light,air:5;light:5,Galeon,s1_gustowl,
-base_muddlit,0,earth,,,Muddlit ,,s1_pebblit:earth:5
+base_muddlit,0,earth,,,Muddlit ,,s1_pebblit:earth:5 || s1_terracore:earth:5
 s1_pebblit,1,earth,,earth:5,Pebblit,base_muddlit,s2_glimmerscarab:earth:5;light:5 || s2_alloyscarab:earth:5;metal:5
 s2_glimmerscarab,2,earth,light,earth:5;light:5,Glimmerscarab,s1_pebblit,
 s2_alloyscarab,2,earth,metal,earth:5;metal:5,Alloyscarab,s1_pebblit,
+s1_terracore,1,earth,,earth:5,Terracore,base_muddlit,s2_gravolith:earth:10 || s2_grimite:earth:5;heart:5 || s2_lithyte:earth:5;light:5 || s2_terraquor:earth:5;water:5
+s2_gravolith,2,earth,,earth:10,Gravolith,s1_terracore,
+s2_grimite,2,earth,heart,earth:5;heart:5,Grimite,s1_terracore,
+s2_lithyte,2,earth,light,earth:5;light:5,Lithyte,s1_terracore,
+s2_terraquor,2,earth,water,earth:5;water:5,Terraquor,s1_terracore,
 base_sparklet,0,fire,,,Sparklet,,s1_emberit:fire:5 || s1_flarefox:fire:5 || s1_pyroxy:fire:5
 s1_emberit,1,fire,,fire:5,Emberit,base_sparklet,s2_flaregon:fire:5;air:5 || s2_pyraxion:fire:5;earth:5
 s2_flaregon,2,fire,air,fire:5;air:5,Flaregon,s1_emberit,
@@ -22,7 +27,9 @@ s2_tinfriend,2,heart,metal,heart:5;metal:5,Tinfriend,s1_snugglepuff,
 base_lumee,0,light,,,Lumee,,s1_luminx:light:5
 s1_luminx,1,light,,light:5,Luminx,base_lumee,
 base_alooy,0,metal,,,Alooy,,s1_cogpup:metal:5
-s1_cogpup,1,metal,,metal:5,Cogpup,base_alooy,
+s1_cogpup,1,metal,,metal:5,Cogpup,base_alooy,s2_cindraven:metal:5;fire:5 || s2_heartsteel:metal:5;heart:5
+s2_cindraven,2,metal,fire,metal:5;fire:5,Cindraven,s1_cogpup,
+s2_heartsteel,2,metal,heart,metal:5;heart:5,Heartsteel,s1_cogpup,
 base_droplin,0,water,,,Droplin,,s1_puffwin:water:5 || s1_shellfin:water:5
 s1_puffwin,1,water,,water:5,Puffwin,base_droplin,s2_galeguin:water:5;air:5 || s2_frostern:water:5;metal:5 || s2_aquafluff:water:10
 s2_galeguin,2,water,air,water:5;air:5,Galeguin,s1_puffwin,
