@@ -23,7 +23,11 @@ base_lumee,0,light,,,Lumee,,s1_luminx:light:5
 s1_luminx,1,light,,light:5,Luminx,base_lumee,
 base_alooy,0,metal,,,Alooy,,s1_cogpup:metal:5
 s1_cogpup,1,metal,,metal:5,Cogpup,base_alooy,
-base_droplin,0,water,,,Droplin,,s1_shellfin:water:5
+base_droplin,0,water,,,Droplin,,s1_puffwin:water:5 || s1_shellfin:water:5
+s1_puffwin,1,water,,water:5,Puffwin,base_droplin,s2_galeguin:water:5;air:5 || s2_frostern:water:5;metal:5 || s2_aquafluff:water:10
+s2_galeguin,2,water,air,water:5;air:5,Galeguin,s1_puffwin,
+s2_frostern,2,water,metal,water:5;metal:5,Frostern,s1_puffwin,
+s2_aquafluff,2,water,,water:10,Aquafluff,s1_puffwin,
 s1_shellfin,1,water,,water:5,Shellfin,base_droplin,s2_tidebreaker:water:5;earth:5 || s2_rivetrise:water:5;metal:5
 s2_tidebreaker,2,water,earth,water:5;earth:5,Tidebreaker,s1_shellfin,
 s2_rivetrise,2,water,metal,water:5;metal:5,Rivetrise,s1_shellfin,
