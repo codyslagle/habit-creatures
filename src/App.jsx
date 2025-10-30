@@ -1,9 +1,13 @@
+// Full file: src/App.jsx
 import { useEffect, useMemo, useState } from "react";
 import { loadDexFromCSV, ELEMENTS } from "./data/csvDexLoader";
+import suggestions from "./data/taskSuggestions.json";
 
 /* ===================== Helpers & Constants ===================== */
 
 const blankTally = () => ({ fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 });
+const blankXPByEl = () => ({ fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 });
+
 const cap = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const caps = (arr) => arr.map(cap).join(" / ");
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -44,9 +48,7 @@ const ELEMENT_BADGE_BG = {
 // XP per difficulty
 const XP_BY_DIFFICULTY = { easy: 5, med: 10, hard: 20 };
 
-/* ===== New level curve (mobile-friendly) =====
-   XP_to_level(N) = round(100 * 1.25^(N-1)), no cap.
-   We compute level from total XP using cumulative thresholds. */
+/* ===== Level curve ===== */
 const xpToLevel = (level) => Math.round(100 * Math.pow(1.25, Math.max(0, level - 1)));
 function levelInfoFromTotalXP(totalXP) {
   let level = 1;
@@ -93,7 +95,7 @@ const DAY_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
 /* ===================== Save & Migration ===================== */
 
-const SAVE_VERSION = 5;
+const SAVE_VERSION = 6;
 const STORAGE_KEY = "hc-state";
 
 const initialState = {
@@ -102,8 +104,8 @@ const initialState = {
   // Multi-slot creature storage (unlimited)
   stable: [
     {
-      egg: { progress: 0, cost: 5, element: null, tally: blankTally() },
-      creature: { speciesId: null, nickname: null, happiness: null }
+      egg: { progress: 0, cost: 3, element: null, tally: blankTally() },
+      creature: { speciesId: null, nickname: null, happiness: null, xpTotal: 0, xpByElement: blankXPByEl() }
     }
   ],
 
@@ -123,8 +125,10 @@ const initialState = {
     xpByElement: { fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 },
     devOffsetDays: 0,
     weekStartDay: 0, // user preference: 0=Sun .. 6=Sat
-    level: 1,       // redundant but kept for compatibility
-    gems: 0
+    level: 1,
+    gems: 0,
+    // New: pokedex registry
+    pokedex: {} // { [speciesId]: { seen:boolean, owned:boolean, firstSeenISO:string } }
   }
 };
 
@@ -142,22 +146,33 @@ function withDefaults(s) {
       weekStartDay: (s?.meta?.weekStartDay ?? 0),
       level: s?.meta?.level ?? base.meta.level,
       gems: s?.meta?.gems ?? 0,
-      lastGemAwardDayKey: s?.meta?.lastGemAwardDayKey ?? null
+      lastGemAwardDayKey: s?.meta?.lastGemAwardDayKey ?? null,
+      pokedex: s?.meta?.pokedex || {}
     }
   };
 
-  // MIGRATION: if old single egg/creature existed, move to stable[0]
+  // MIGRATION: stable / creature fields
   if (!Array.isArray(s?.stable)) {
     const oldEgg = s?.egg;
     const oldCreature = s?.creature;
     next.stable = [
       {
-        egg: oldEgg ? { ...base.stable[0].egg, ...oldEgg } : base.stable[0].egg,
-        creature: oldCreature ? { ...base.stable[0].creature, ...oldCreature } : base.stable[0].creature
+        egg: oldEgg ? { ...base.stable[0].egg, ...oldEgg, cost: 3 } : base.stable[0].egg,
+        creature: oldCreature
+          ? { ...base.stable[0].creature, ...oldCreature, xpTotal: oldCreature.xpTotal || 0, xpByElement: oldCreature.xpByElement || blankXPByEl() }
+          : base.stable[0].creature
       }
     ];
   } else {
-    next.stable = s.stable;
+    next.stable = s.stable.map(slot => ({
+      egg: { ...base.stable[0].egg, ...slot.egg, cost: 3 }, // enforce hatch cost=3
+      creature: {
+        ...base.stable[0].creature,
+        ...slot.creature,
+        xpTotal: slot?.creature?.xpTotal || 0,
+        xpByElement: slot?.creature?.xpByElement || blankXPByEl()
+      }
+    }));
   }
 
   // Active Team migration
@@ -168,7 +183,9 @@ function withDefaults(s) {
     next.activeTeam = s.activeTeam.filter(i => typeof i === "number" && i >= 0 && i < next.stable.length);
     if (next.activeTeam.length === 0) next.activeTeam = [0];
   }
-  next.activeIndex = (typeof s?.activeIndex === "number") ? Math.max(0, Math.min(next.activeTeam.length - 1, s.activeIndex)) : 0;
+  next.activeIndex = (typeof s?.activeIndex === "number")
+    ? Math.max(0, Math.min(next.activeTeam.length - 1, s.activeIndex))
+    : 0;
 
   // Tasks
   next.tasks = Array.isArray(s?.tasks) ? s.tasks.map(migrateTask) : [];
@@ -257,7 +274,7 @@ function canCompleteTaskNow(t, todayKey, wkKey, dayIndex) {
 // Should appear in Today?
 function isDueToday(t, todayKey, wkKey, dayIndex) {
   if (t.frequency === "once")   return !t.doneOnce;
-  if (t.frequency === "daily")  return true;
+  if (t.frequency === "daily")  return true; // filtered later by !canCompleteTaskNow -> hides after completion
   if (t.frequency === "weekly") {
     const onRightDay = (t.weeklyDay == null) ? true : (dayIndex === t.weeklyDay);
     return onRightDay && t.lastCompletedWeekKey !== wkKey;
@@ -272,6 +289,9 @@ export default function App() {
   const [state, setState] = useState(() => loadState() || initialState);
   const [dex, setDex] = useState({ DEX: {}, getSpecies: () => null, findBaseByElement: () => null, ready: false });
 
+  // Tabs
+  const [tab, setTab] = useState("creatures"); // 'creatures' | 'tasks' | 'library'
+
   // UI toggles
   const [showCreatureCard, setShowCreatureCard] = useState(true);
   const [showEvoModal, setShowEvoModal] = useState(false);
@@ -281,6 +301,7 @@ export default function App() {
   const [tasksCollapsedAll, setTasksCollapsedAll] = useState(false);
   const [tasksCollapsedCompleted, setTasksCollapsedCompleted] = useState(true); // default collapsed
   const [showSettings, setShowSettings] = useState(false);
+  const [showProfile, setShowProfile] = useState(false); // per-creature profile
 
   // Task form UI
   const [taskTitle, setTaskTitle] = useState("");
@@ -289,9 +310,11 @@ export default function App() {
   const [taskFrequency, setTaskFrequency] = useState("daily");
   const [taskWeeklyDay, setTaskWeeklyDay] = useState(null);  // for 'weekly'
   const [taskDays, setTaskDays] = useState([]);              // for 'days'
+  const [showSuggestions, setShowSuggestions] = useState(false); // ✅ NEW: collapsed by default
 
   // Task list controls
   const [filterElement, setFilterElement] = useState("all");
+  const [filterOccur, setFilterOccur] = useState("all"); // 'all'|'once'|'daily'|'weekly'|'days'
   const [sortMode, setSortMode] = useState("element"); // 'element' | 'title'
 
   // Inline edit
@@ -305,6 +328,9 @@ export default function App() {
   const [showXPTooltip, setShowXPTooltip] = useState(false);
   const [showShop, setShowShop] = useState(false);
   const [showManageTeam, setShowManageTeam] = useState(false);
+
+  // ✅ Evolution Congrats modal state
+  const [showEvoCongrats, setShowEvoCongrats] = useState(null); // { from, to }
 
   /* ----- DEX load ----- */
   useEffect(() => {
@@ -377,8 +403,8 @@ export default function App() {
     setState((s)=>{
       const next = structuredClone(s);
       next.stable.push({
-        egg: { progress: 0, cost: 5, element: null, tally: blankTally() },
-        creature: { speciesId: null, nickname: null, happiness: null }
+        egg: { progress: 0, cost: 3, element: null, tally: blankTally() },
+        creature: { speciesId: null, nickname: null, happiness: null, xpTotal: 0, xpByElement: blankXPByEl() }
       });
       const newIndex = next.stable.length - 1;
       // If team has space (<6), auto-add dev egg to team and focus it
@@ -396,8 +422,8 @@ export default function App() {
       if ((next.meta.gems || 0) < 20) return s; // not enough
       next.meta.gems -= 20;
       next.stable.push({
-        egg: { progress: 0, cost: 5, element: null, tally: blankTally() },
-        creature: { speciesId: null, nickname: null, happiness: null }
+        egg: { progress: 0, cost: 3, element: null, tally: blankTally() },
+        creature: { speciesId: null, nickname: null, happiness: null, xpTotal: 0, xpByElement: blankXPByEl() }
       });
       const newIdx = next.stable.length - 1;
       if (next.activeTeam.length < 6) {
@@ -425,6 +451,37 @@ export default function App() {
       if (next.activeTeam.length === 0) next.activeTeam = [0];
       return next;
     });
+  }
+
+  /* ===================== Pokedex helpers ===================== */
+
+  function ensureDexEntry(next, speciesId) {
+    if (!speciesId) return;
+    if (!next.meta.pokedex[speciesId]) {
+      next.meta.pokedex[speciesId] = { seen: false, owned: false, firstSeenISO: null };
+    }
+  }
+  function markSeen(next, speciesId) {
+    if (!speciesId) return;
+    ensureDexEntry(next, speciesId);
+    const entry = next.meta.pokedex[speciesId];
+    if (!entry.seen) {
+      entry.seen = true;
+      entry.firstSeenISO = entry.firstSeenISO || nowISO();
+    }
+  }
+  // ✅ Mark the species AND its ancestors as owned (you had to own them to get here)
+  function markOwnedLineage(next, speciesId) {
+    if (!speciesId) return;
+    let cur = dex.getSpecies(speciesId);
+    while (cur) {
+      ensureDexEntry(next, cur.id);
+      next.meta.pokedex[cur.id].seen = true;
+      next.meta.pokedex[cur.id].owned = true;
+      next.meta.pokedex[cur.id].firstSeenISO = next.meta.pokedex[cur.id].firstSeenISO || nowISO();
+      if (!cur.parentId) break;
+      cur = dex.getSpecies(cur.parentId);
+    }
   }
 
   /* ===================== Core Actions ===================== */
@@ -471,6 +528,15 @@ export default function App() {
       next.candies[el] = (next.candies[el] || 0) + 1;
       awardXP(next, 1);
       next.meta.xpByElement[el] = (next.meta.xpByElement[el] || 0) + 1;
+      // Party XP (tiny dev action credit)
+      for (const idx of next.activeTeam) {
+        const slot = next.stable[idx];
+        if (slot?.creature?.speciesId) {
+          slot.creature.xpTotal += 1;
+          slot.creature.xpByElement[el] = (slot.creature.xpByElement[el] || 0) + 1;
+          markSeen(next, slot.creature.speciesId); // seen/current
+        }
+      }
       return next;
     });
   }
@@ -499,7 +565,9 @@ export default function App() {
       const base = dex.findBaseByElement(dominant);
       if (!base) return s;
       slot.egg = { progress: 0, cost: slot.egg.cost, element: dominant, tally: blankTally() };
-      slot.creature = { speciesId: base.id, nickname: null, happiness: 60 };
+      slot.creature = { speciesId: base.id, nickname: null, happiness: 60, xpTotal: 0, xpByElement: blankXPByEl() };
+      // Pokedex: owning base (and its lineage == itself)
+      markOwnedLineage(next, base.id);
       return next;
     });
   }
@@ -519,15 +587,27 @@ export default function App() {
     const cheapest = Math.min(...Object.keys(byCost).map(Number));
     const cheapestSet = byCost[cheapest];
 
+    // Mark these species as seen when presenting choices
+    setState((s) => {
+      const next = structuredClone(s);
+      for (const ev of cheapestSet) markSeen(next, ev.to);
+      return next;
+    });
+
     if (cheapestSet.length === 1) confirmEvolution(cheapestSet[0]);
     else { setEvoChoices(cheapestSet); setShowEvoModal(true); }
   }
 
   function confirmEvolution(chosen) {
+    // ✅ Determine “from” and “to” BEFORE state mutation so the modal always has correct data
+    const fromSp = creature ? dex.getSpecies(creature.id) : null;
+    const toSp = dex.getSpecies(chosen.to);
+
     setState((s) => {
       const next = structuredClone(s);
       const slot = next.stable[next.activeTeam[next.activeIndex] ?? 0];
       if (!slot.creature.speciesId) return s;
+
       Object.entries(chosen.cost || {}).forEach(([el, amt]) => {
         next.candies[el] = Math.max(0, (next.candies[el] || 0) - amt);
       });
@@ -535,8 +615,14 @@ export default function App() {
       if (slot.creature.happiness != null) {
         slot.creature.happiness = clamp((slot.creature.happiness || 0) + 5, 0, 100);
       }
+      // Pokedex: own the evolved species + all its ancestors
+      markOwnedLineage(next, chosen.to);
       return next;
     });
+
+    // ✅ Trigger the Congrats modal with stable “from/to”
+    setShowEvoCongrats({ from: fromSp, to: toSp });
+
     setShowEvoModal(false);
     setEvoChoices([]);
   }
@@ -592,9 +678,21 @@ export default function App() {
       awardXP(next, xpGain);
       next.meta.xpByElement[t.element] = (next.meta.xpByElement[t.element] || 0) + xpGain;
 
+      // Party XP: each active creature gains the same XP, bucketed by element
+      for (const idx2 of next.activeTeam) {
+        const slot = next.stable[idx2];
+        if (slot?.creature?.speciesId) {
+          slot.creature.xpTotal += xpGain;
+          slot.creature.xpByElement[t.element] = (slot.creature.xpByElement[t.element] || 0) + xpGain;
+          // Mark current creatures seen (safety)
+          markSeen(next, slot.creature.speciesId);
+        }
+      }
+
       if (t.frequency === "once") t.doneOnce = true;
       else if (t.frequency === "weekly") t.lastCompletedWeekKey = wkKey;
       else t.lastCompletedDayKey = todayKey; // daily or days
+
       return next;
     });
   }
@@ -643,16 +741,23 @@ export default function App() {
     return a.title.localeCompare(b.title);
   }
 
-  const visibleTasks = state.tasks
-    .filter(t => filterElement === "all" ? true : t.element === filterElement);
+  const visibleTasksBase = state.tasks
+    .filter(t => filterElement === "all" ? true : t.element === filterElement)
+    .filter(t => filterOccur === "all" ? true : (
+      filterOccur === "once" ? t.frequency === "once" :
+      filterOccur === "daily" ? t.frequency === "daily" :
+      filterOccur === "weekly" ? t.frequency === "weekly" :
+      t.frequency === "days"
+    ));
 
-  const tasksToday = visibleTasks
+  const tasksToday = visibleTasksBase
     .filter(t => isDueToday(t, todayKey, wkKey, todayDayIndex))
+    .filter(t => canCompleteTaskNow(t, todayKey, wkKey, todayDayIndex)) // hide daily once completed
     .sort(bySort);
 
-  const tasksAll = visibleTasks.sort(bySort);
+  const tasksAll = visibleTasksBase.slice().sort(bySort);
 
-  const completedToday = visibleTasks
+  const completedToday = visibleTasksBase
     .filter(t => {
       const due = isDueToday(t, todayKey, wkKey, todayDayIndex);
       const canDo = canCompleteTaskNow(t, todayKey, wkKey, todayDayIndex);
@@ -663,6 +768,69 @@ export default function App() {
   /* ===================== Level values (for status bar) ===================== */
   const lvlInfo = levelInfoFromTotalXP(state.meta.xpTotal || 0);
   const xpPct = Math.max(0, Math.min(100, Math.round((lvlInfo.currentIntoLevel / lvlInfo.neededForLevel) * 100)));
+
+  /* ===================== Library (Growlings index) ===================== */
+
+  // Build list of species grouped by element and evolution lines (rooted by chain)
+  const allSpecies = useMemo(() => {
+    if (!dex.ready) return [];
+    return Object.values(dex.DEX || {});
+  }, [dex]);
+
+  function getRootId(sp) {
+    // Climb parentId to the top
+    let cur = sp;
+    const seen = new Set();
+    while (cur?.parentId) {
+      if (seen.has(cur.id)) break;
+      seen.add(cur.id);
+      cur = dex.getSpecies(cur.parentId);
+    }
+    return cur?.id || sp.id;
+  }
+
+  const libraryByElement = useMemo(() => {
+    const out = {};
+    for (const el of ELEMENTS) out[el] = new Map(); // rootId -> [species...]
+    for (const sp of allSpecies) {
+      const primary = sp?.elements?.[0];
+      if (!primary) continue;
+      if (!ELEMENTS.includes(primary)) continue;
+      const root = getRootId(sp);
+      if (!out[primary].has(root)) out[primary].set(root, []);
+      out[primary].get(root).push(sp);
+    }
+    // Sort each line by stage, then id
+    for (const el of ELEMENTS) {
+      for (const [rootId, arr] of out[el].entries()) {
+        arr.sort((a,b)=> (a.stage - b.stage) || a.id.localeCompare(b.id));
+      }
+    }
+    return out;
+  }, [allSpecies, dex]);
+
+  // ✅ Owned stats (overall + per element)
+  const ownedIds = new Set(
+    Object.entries(state.meta.pokedex || {})
+      .filter(([,v]) => v?.owned)
+      .map(([id]) => id)
+  );
+  const overallTotal = allSpecies.length || 0;
+  const overallOwned = overallTotal ? allSpecies.filter(sp => ownedIds.has(sp.id)).length : 0;
+  const overallPct = overallTotal ? Math.round((overallOwned / overallTotal) * 100) : 0;
+
+  function elementCounts(el) {
+    let total = 0;
+    let owned = 0;
+    for (const [, line] of (libraryByElement[el] || new Map()).entries()) {
+      for (const sp of line) {
+        total += 1;
+        if (ownedIds.has(sp.id)) owned += 1;
+      }
+    }
+    const pct = total ? Math.round((owned / total) * 100) : 0;
+    return { total, owned, pct };
+  }
 
   /* ===================== Render ===================== */
 
@@ -713,13 +881,14 @@ export default function App() {
 
   return (
     <div className="container">
-      {/* Header */}
+      {/* Header with Tabs */}
       <div className="card" style={{ marginBottom: 10 }}>
         <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <div className="big">Growlings — Habit Hatchlings (MVP)</div>
-          <div className="small" style={{ textAlign: "right" }}>
-            {/* Keeping minimal here; main stats below in status bar */}
-            Last seen: <strong>{state.meta.lastSeenISO ? state.meta.lastSeenISO.slice(0,10) : "—"}</strong>
+          <div className="big">Growlings — Habit Hatchlings</div>
+          <div className="row" style={{ gap:6 }}>
+            <button className="btn" onClick={()=>setTab("creatures")} disabled={tab==="creatures"}>Creatures</button>
+            <button className="btn" onClick={()=>setTab("tasks")} disabled={tab==="tasks"}>Tasks</button>
+            <button className="btn" onClick={()=>setTab("library")} disabled={tab==="library"}>Library</button>
           </div>
         </div>
       </div>
@@ -749,311 +918,465 @@ export default function App() {
         </div>
       </div>
 
-      {/* Creature Card */}
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="row" style={{ alignItems:"center", justifyContent:"space-between" }}>
-          <div className="big">Creature Card</div>
-          <div className="row" style={{ gap:6, alignItems:"center" }}>
-            <button className="btn" onClick={gotoPrev} title="Previous">◀</button>
-            <div className="small" style={{ alignSelf:"center" }}>
-              Team Slot {state.activeIndex+1} / {state.activeTeam.length}
-            </div>
-            <button className="btn" onClick={gotoNext} title="Next">▶</button>
-            <button className="btn" onClick={openManageTeam} title="Manage Team">Manage Team</button>
-            <button className="btn" onClick={() => setShowCreatureCard(v => !v)}>
-              {showCreatureCard ? "Hide" : "Show"}
-            </button>
-          </div>
-        </div>
-
-        {showCreatureCard && (
-          <div className="row" style={{ alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
-            <div>
-              <div className="small">Current</div>
-              <div className="big" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                {editingNick ? (
-                  <input
-                    autoFocus
-                    defaultValue={activeCreature.nickname || ""}
-                    placeholder={speciesName}
-                    className="input"
-                    style={{ minWidth: 180 }}
-                    onBlur={saveNick}
-                    onKeyDown={(e) => { if (e.key === "Enter") saveNick(e); if (e.key === "Escape") setEditingNick(false); }}
-                  />
-                ) : (
-                  <>
-                    <span>{nickDisplay}</span>
-                    {!!creature && (
-                      <button className="btn" style={{ padding: 4, minWidth: 0 }} onClick={startEditNick} title="Edit nickname">
-                        <img src="/ui/icons/16px/icon_edit.png" width="16" height="16" alt="Edit" style={{ imageRendering: "pixelated", display: "block" }} />
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-              {!!creature && <div className="small" style={{ opacity: 0.8, marginTop: 2 }}>{sublabel}</div>}
-            </div>
-
-            <div className="sprite" style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-              <img
-                src={sprite}
-                alt="creature"
-                width="64"
-                height="64"
-                style={{ imageRendering: "pixelated" }}
-                onError={(e) => { e.currentTarget.src = "/egg.png"; }}
-              />
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Egg/Hatch — only before hatch */}
-      {!creature && (
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div className="row" style={{ alignItems: "center", justifyContent: "space-between" }}>
-            <div>
-              <div className="small">Egg progress</div>
-              <div className="progress"><div style={{ width: `${progressPct}%` }} /></div>
-              <div className="small" style={{ marginTop: 6 }}>
-                {activeEgg.progress}/{activeEgg.cost}
-              </div>
-            </div>
-            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-              {ELEMENTS.map((el) => (
-                <button key={el} className="btn" disabled={eggIsFull} onClick={() => feedCandy(el)}>
-                  Feed {cap(el)}
+      {/* ===== CREATURES TAB ===== */}
+      {tab === "creatures" && (
+        <>
+          {/* Creature Card */}
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="row" style={{ alignItems:"center", justifyContent:"space-between" }}>
+              <div className="big">Creature Card</div>
+              <div className="row" style={{ gap:6, alignItems:"center" }}>
+                <button className="btn" onClick={gotoPrev} title="Previous">◀</button>
+                <div className="small" style={{ alignSelf:"center" }}>
+                  Team Slot {state.activeIndex+1} / {state.activeTeam.length}
+                </div>
+                <button className="btn" onClick={gotoNext} title="Next">▶</button>
+                <button className="btn" onClick={openManageTeam} title="Manage Team">Manage Team</button>
+                <button className="btn" onClick={()=>setShowProfile(true)} title="View Summary">Summary</button>
+                <button className="btn" onClick={() => setShowCreatureCard(v => !v)}>
+                  {showCreatureCard ? "Hide" : "Show"}
                 </button>
+              </div>
+            </div>
+
+            {showCreatureCard && (
+              <div className="row" style={{ alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
+                <div>
+                  <div className="small">Current</div>
+                  <div className="big" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    {editingNick ? (
+                      <input
+                        autoFocus
+                        defaultValue={activeCreature.nickname || ""}
+                        placeholder={speciesName}
+                        className="input"
+                        style={{ minWidth: 180 }}
+                        onBlur={saveNick}
+                        onKeyDown={(e) => { if (e.key === "Enter") saveNick(e); if (e.key === "Escape") setEditingNick(false); }}
+                      />
+                    ) : (
+                      <>
+                        <span>{nickDisplay}</span>
+                        {!!creature && (
+                          <button className="btn" style={{ padding: 4, minWidth: 0 }} onClick={startEditNick} title="Edit nickname">
+                            <img src="/ui/icons/16px/icon_edit.png" width="16" height="16" alt="Edit" style={{ imageRendering: "pixelated", display: "block" }} />
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                  {!!creature && <div className="small" style={{ opacity: 0.8, marginTop: 2 }}>{sublabel}</div>}
+                </div>
+
+                <div className="sprite" style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                  <img
+                    src={sprite}
+                    alt="creature"
+                    width="64"
+                    height="64"
+                    style={{ imageRendering: "pixelated" }}
+                    onError={(e) => { e.currentTarget.src = "/egg.png"; }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Egg/Hatch — only before hatch */}
+          {!creature && (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <div className="row" style={{ alignItems: "center", justifyContent: "space-between" }}>
+                <div>
+                  <div className="small">Egg progress</div>
+                  <div className="progress"><div style={{ width: `${progressPct}%` }} /></div>
+                  <div className="small" style={{ marginTop: 6 }}>
+                    {activeEgg.progress}/{activeEgg.cost}
+                  </div>
+                </div>
+                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                  {ELEMENTS.map((el) => (
+                    <button key={el} className="btn" disabled={eggIsFull} onClick={() => feedCandy(el)}>
+                      Feed {cap(el)}
+                    </button>
+                  ))}
+                  <button className="btn" disabled={!eggIsFull} onClick={hatchIfReady}>Hatch</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Evolution — only after hatch */}
+          {creature && (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <div className="big">Evolve</div>
+              <div className="small">{evolveSubtitle}</div>
+
+              {hasEvos && (
+                <div style={{ marginTop: 10 }}>
+                  <div className="small" style={{ marginBottom: 6 }}>
+                    {`Available ${pluralize(evoCount, "Evolution", "Evolutions")}`}
+                  </div>
+                  <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                    {currentEvos.map((ev, idx) => {
+                      const sp = dex.getSpecies(ev.to);
+                      const can = canAfford(state.candies, ev.cost);
+                      const art = sp?.sprite || "/egg.png";
+                      const owned = !!state.meta.pokedex?.[sp?.id || ""]?.owned;
+                      const needText = ELEMENTS
+                        .map(el => {
+                          const delta = Math.max(0, (ev.cost[el]||0) - (state.candies[el]||0));
+                          return delta>0 ? `${delta} ${cap(el)}` : null;
+                        })
+                        .filter(Boolean)
+                        .join(" + ");
+                      return (
+                        <div key={idx} className="row" style={{
+                          alignItems: "center", gap: 8, padding: "6px 10px",
+                          border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, opacity: can ? 1 : 0.7
+                        }}>
+                          <img
+                            src={art}
+                            alt={sp?.name || "Evolution"}
+                            width="32"
+                            height="32"
+                            style={{
+                              imageRendering: "pixelated",
+                              filter: owned ? "none" : "grayscale(1) brightness(0) contrast(1)"
+                            }}
+                          />
+                          <div>
+                            <div className="small" style={{ fontWeight: 600 }}>{owned ? (sp?.name || "???") : "???"}</div>
+                            <div className="small" style={{ opacity: 0.9 }}>Cost: {formatCost(ev.cost)}</div>
+                            {!can && needText && <div className="small" style={{ opacity: 0.75 }}>Need: {needText}</div>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="row" style={{ marginTop: 10, flexWrap: "wrap", gap: 8 }}>
+                {!hasEvos ? (
+                  <button className="btn" disabled title="This Growling is already at its final form">Final Form</button>
+                ) : (
+                  <button className="btn" onClick={tryEvolve} disabled={!hasAffordable} title={!hasAffordable ? "Not enough candies yet" : "Evolve"}>
+                    {hasAffordable ? "Evolve" : "Cannot Evolve Yet"}
+                  </button>
+                )}
+                <button
+                  className="btn"
+                  onClick={() => {
+                    if (confirm("Reset all progress? This cannot be undone.")) {
+                      setState(structuredClone(initialState));
+                    }
+                  }}
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Candy Bag */}
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="big">Candy Bag</div>
+            <div className="row" style={{ marginTop: 8, flexWrap: "wrap", gap: 8 }}>
+              {ELEMENTS.map((el) => (
+                <span key={el} className="badge">{cap(el)}: {state.candies[el]}</span>
               ))}
-              <button className="btn" disabled={!eggIsFull} onClick={hatchIfReady}>Hatch</button>
+            </div>
+            <div className="row" style={{ marginTop: 8, alignItems: "center", gap: 8 }}>
+              <div className="small" style={{ opacity: 0.8 }}>Trainer XP by Element:</div>
+              <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+                {ELEMENTS.map(el => (
+                  <span key={el} className="badge">{cap(el)} XP: {state.meta.xpByElement[el] || 0}</span>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
+
+          {/* Developer */}
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
+              <div className="big">Developer</div>
+              <button className="btn" onClick={()=>setShowDevPanel(v=>!v)}>{showDevPanel ? "Hide" : "Show"}</button>
+            </div>
+            {showDevPanel && (
+              <>
+                <div className="row" style={{ flexWrap:"wrap", gap:8, marginTop:8 }}>
+                  <button className="btn" onClick={()=>setState(s=>({ ...s, meta:{ ...s.meta, devOffsetDays: s.meta.devOffsetDays - 1 } }))}>−1 day</button>
+                  <button className="btn" onClick={()=>setState(s=>({ ...s, meta:{ ...s.meta, devOffsetDays: s.meta.devOffsetDays + 1 } }))}>+1 day</button>
+                  <button className="btn" onClick={()=>setState(s=>({ ...s, meta:{ ...s.meta, devOffsetDays: 0 } }))}>Reset date</button>
+                </div>
+                <div className="row" style={{ flexWrap:"wrap", gap:8, marginTop:8 }}>
+                  {ELEMENTS.map(el => (
+                    <button key={el} className="btn" onClick={() => earnCandy(el)}>+1 {cap(el)} (dev)</button>
+                  ))}
+                  <button className="btn" onClick={addEggSlotDev}>+ Egg (dev, free)</button>
+                </div>
+              </>
+            )}
+          </div>
+        </>
       )}
 
-      {/* Evolution — only after hatch */}
-      {creature && (
+      {/* ===== TASKS TAB ===== */}
+      {tab === "tasks" && (
         <div className="card" style={{ marginBottom: 12 }}>
-          <div className="big">Evolve</div>
-          <div className="small">{evolveSubtitle}</div>
-
-          {hasEvos && (
-            <div style={{ marginTop: 10 }}>
-              <div className="small" style={{ marginBottom: 6 }}>
-                {`Available ${pluralize(evoCount, "Evolution", "Evolutions")}`}
+          <div className="row" style={{ justifyContent:"space-between", alignItems:"center", gap: 10 }}>
+            <div className="big">Tasks</div>
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              {/* Occurrence filter pills */}
+              <div className="row" style={{ gap:6, flexWrap:"wrap" }}>
+                {[
+                  ["all","All"],["once","Once"],["daily","Daily"],["weekly","Weekly"],["days","Specific Days"]
+                ].map(([val,label])=>(
+                  <button
+                    key={val}
+                    className="btn"
+                    onClick={()=>setFilterOccur(val)}
+                    disabled={filterOccur===val}
+                    title={`Filter: ${label}`}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
-              <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-                {currentEvos.map((ev, idx) => {
-                  const sp = dex.getSpecies(ev.to);
-                  const can = canAfford(state.candies, ev.cost);
-                  const art = sp?.sprite || "/egg.png";
-                  const needText = ELEMENTS
-                    .map(el => {
-                      const delta = Math.max(0, (ev.cost[el]||0) - (state.candies[el]||0));
-                      return delta>0 ? `${delta} ${cap(el)}` : null;
-                    })
-                    .filter(Boolean)
-                    .join(" + ");
-                  return (
-                    <div key={idx} className="row" style={{
-                      alignItems: "center", gap: 8, padding: "6px 10px",
-                      border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, opacity: can ? 1 : 0.7
-                    }}>
-                      <img src={art} alt={sp?.name || "Evolution"} width="32" height="32" style={{ imageRendering: "pixelated" }} />
-                      <div>
-                        <div className="small" style={{ fontWeight: 600 }}>{sp?.name || "???"}</div>
-                        <div className="small" style={{ opacity: 0.9 }}>Cost: {formatCost(ev.cost)}</div>
-                        {!can && needText && <div className="small" style={{ opacity: 0.75 }}>Need: {needText}</div>}
+
+              <select className="input" value={filterElement} onChange={(e)=>setFilterElement(e.target.value)}>
+                <option value="all">All Elements</option>
+                {ELEMENTS.map(el => <option key={el} value={el}>{cap(el)}</option>)}
+              </select>
+              <select className="input" value={sortMode} onChange={(e)=>setSortMode(e.target.value)}>
+                <option value="element">Sort by Element</option>
+                <option value="title">Sort by Title</option>
+              </select>
+            </div>
+          </div>
+          <div className="small">Create tasks, then complete them to earn candies, XP, and daily 💎.</div>
+
+          {/* Add task form */}
+          <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <input
+              className="input"
+              style={{ minWidth: 240 }}
+              placeholder="Task title (e.g., Go for a walk)"
+              value={taskTitle}
+              onChange={(e) => setTaskTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") addTask(); }}
+            />
+            <select className="input" value={taskElement} onChange={(e) => setTaskElement(e.target.value)}>
+              {ELEMENTS.map(el => <option key={el} value={el}>{ELEMENT_LABEL[el]}</option>)}
+            </select>
+            <select className="input" value={taskDifficulty} onChange={(e) => setTaskDifficulty(e.target.value)}>
+              <option value="easy">Easy (5 XP)</option>
+              <option value="med">Medium (10 XP)</option>
+              <option value="hard">Hard (20 XP)</option>
+            </select>
+            <select className="input" value={taskFrequency} onChange={(e) => setTaskFrequency(e.target.value)}>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="days">Specific Days</option>
+              <option value="once">One-time</option>
+            </select>
+
+            {taskFrequency === "weekly" && (
+              <select className="input" value={taskWeeklyDay ?? ""} onChange={(e)=>setTaskWeeklyDay(e.target.value===""?null:Number(e.target.value))}>
+                <option value="">Any day this week</option>
+                {DAY_SHORT.map((d,i)=><option key={i} value={i}>{d}</option>)}
+              </select>
+            )}
+
+            {taskFrequency === "days" && (
+              <div className="row" style={{ gap: 4, flexWrap: "wrap" }}>
+                {DAY_SHORT.map((d, i) => (
+                  <label key={i} className="small" style={{ display:"inline-flex", alignItems:"center", gap:4 }}>
+                    <input
+                      type="checkbox"
+                      checked={taskDays.includes(i)}
+                      onChange={() => {
+                        setTaskDays((prev) => prev.includes(i) ? prev.filter(x=>x!==i) : [...prev, i]);
+                      }}
+                    />
+                    {d}
+                  </label>
+                ))}
+              </div>
+            )}
+            <button className="btn" onClick={addTask}>Add Task</button>
+          </div>
+
+          {/* ✅ Suggestions (collapsed by default) */}
+          <div className="card" style={{ marginTop:12 }}>
+            <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
+              <div className="small" style={{ fontWeight:700 }}>
+                Suggestions for {ELEMENT_LABEL[taskElement]}
+              </div>
+              <button className="btn" onClick={()=>setShowSuggestions(v=>!v)}>
+                {showSuggestions ? "Hide ideas" : "Give me task ideas"}
+              </button>
+            </div>
+
+            {showSuggestions && (
+              <div className="row" style={{ marginTop:8, gap:8, flexWrap:"wrap" }}>
+                {(suggestions?.[taskElement] || []).map((title, i) => (
+                  <button
+                    key={i}
+                    className="btn"
+                    title="Add this suggestion"
+                    onClick={()=>{
+                      setTaskTitle(title);
+                      // You can auto-add on click by uncommenting:
+                      // setTimeout(addTask, 0);
+                    }}
+                  >
+                    + {title}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Today (collapsible) */}
+          <div style={{ marginTop: 14 }}>
+            <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
+              <div className="small" style={{ fontWeight:700 }}>Today</div>
+              <button className="btn" onClick={()=>setTasksCollapsedToday(v=>!v)}>{tasksCollapsedToday ? "Expand" : "Collapse"}</button>
+            </div>
+            {!tasksCollapsedToday && (
+              <div style={{ marginTop: 8, display:"grid", gap:8 }}>
+                {tasksToday.length === 0 ? (
+                  <div className="small" style={{ opacity:0.8 }}>No tasks due (or all done) today.</div>
+                ) : tasksToday.map((t) => renderTaskRow(t))}
+              </div>
+            )}
+          </div>
+
+          {/* Completed Today (collapsible, default collapsed) */}
+          <div style={{ marginTop: 14 }}>
+            <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
+              <div className="small" style={{ fontWeight:700 }}>Completed Today</div>
+              <button className="btn" onClick={()=>setTasksCollapsedCompleted(v=>!v)}>{tasksCollapsedCompleted ? "Expand" : "Collapse"}</button>
+            </div>
+            {!tasksCollapsedCompleted && (
+              <div style={{ marginTop: 8, display:"grid", gap:8 }}>
+                {completedToday.length === 0 ? (
+                  <div className="small" style={{ opacity:0.8 }}>Nothing here yet.</div>
+                ) : completedToday.map((t) => (
+                  editingTaskId === t.id && editDraft
+                  ? renderTaskRow(t) // reuse editor UI
+                  : (
+                    <div
+                      key={t.id}
+                      className="row"
+                      onClick={()=>startEditTask(t)} // click-to-expand editor
+                      style={{
+                        justifyContent:"space-between",
+                        alignItems:"center",
+                        padding:"6px 10px",
+                        border:"1px solid rgba(255,255,255,0.12)",
+                        borderRadius:8,
+                        opacity:0.9,
+                        cursor: "pointer"
+                      }}>
+                      <div className="small" style={{ fontWeight:700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                        {t.title}
+                      </div>
+                      <div className="row" style={{ gap:6, flexWrap:"wrap" }}>
+                        <span className="badge" style={{ background: ELEMENT_BADGE_BG[t.element] }}>{cap(t.element)}</span>
+                        <span className="badge">{t.frequency === "weekly" ? "This week done" : "Done today"}</span>
                       </div>
                     </div>
-                  );
-                })}
+                  )
+                ))}
               </div>
-            </div>
-          )}
-
-          <div className="row" style={{ marginTop: 10, flexWrap: "wrap", gap: 8 }}>
-            {!hasEvos ? (
-              <button className="btn" disabled title="This Growling is already at its final form">Final Form</button>
-            ) : (
-              <button className="btn" onClick={tryEvolve} disabled={!hasAffordable} title={!hasAffordable ? "Not enough candies yet" : "Evolve"}>
-                {hasAffordable ? "Evolve" : "Cannot Evolve Yet"}
-              </button>
             )}
-            <button
-              className="btn"
-              onClick={() => {
-                if (confirm("Reset all progress? This cannot be undone.")) {
-                  setState(structuredClone(initialState));
-                }
-              }}
-            >
-              Reset
-            </button>
+          </div>
+
+          {/* All (collapsible) */}
+          <div style={{ marginTop: 14 }}>
+            <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
+              <div className="small" style={{ fontWeight:700 }}>All Tasks</div>
+              <button className="btn" onClick={()=>setTasksCollapsedAll(v=>!v)}>{tasksCollapsedAll ? "Expand" : "Collapse"}</button>
+            </div>
+            {!tasksCollapsedAll && (
+              <div style={{ marginTop: 8, display:"grid", gap:8 }}>
+                {tasksAll.length === 0 ? (
+                  <div className="small" style={{ opacity:0.8 }}>No tasks yet. Add a few to start earning candies!</div>
+                ) : tasksAll.map((t) => renderTaskRow(t))}
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* TASKS */}
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="row" style={{ justifyContent:"space-between", alignItems:"center", gap: 10 }}>
-          <div className="big">Tasks</div>
-          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-            <select className="input" value={filterElement} onChange={(e)=>setFilterElement(e.target.value)}>
-              <option value="all">All Elements</option>
-              {ELEMENTS.map(el => <option key={el} value={el}>{cap(el)}</option>)}
-            </select>
-            <select className="input" value={sortMode} onChange={(e)=>setSortMode(e.target.value)}>
-              <option value="element">Sort by Element</option>
-              <option value="title">Sort by Title</option>
-            </select>
+      {/* ===== LIBRARY TAB ===== */}
+      {tab === "library" && (
+        <div className="card" style={{ marginBottom:12 }}>
+          <div className="big">Library</div>
+          <div className="small" style={{ marginTop:6, opacity:0.9 }}>
+            Track creatures you’ve seen and owned. Unknown species show as silhouettes until owned.
           </div>
-        </div>
-        <div className="small">Create tasks, then complete them to earn candies, XP, and daily 💎.</div>
 
-        {/* Add task form */}
-        <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          <input
-            className="input"
-            style={{ minWidth: 240 }}
-            placeholder="Task title (e.g., Go for a walk)"
-            value={taskTitle}
-            onChange={(e) => setTaskTitle(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") addTask(); }}
-          />
-          <select className="input" value={taskElement} onChange={(e) => setTaskElement(e.target.value)}>
-            {ELEMENTS.map(el => <option key={el} value={el}>{ELEMENT_LABEL[el]}</option>)}
-          </select>
-          <select className="input" value={taskDifficulty} onChange={(e) => setTaskDifficulty(e.target.value)}>
-            <option value="easy">Easy (5 XP)</option>
-            <option value="med">Medium (10 XP)</option>
-            <option value="hard">Hard (20 XP)</option>
-          </select>
-          <select className="input" value={taskFrequency} onChange={(e) => setTaskFrequency(e.target.value)}>
-            <option value="daily">Daily</option>
-            <option value="weekly">Weekly</option>
-            <option value="days">Specific Days</option>
-            <option value="once">One-time</option>
-          </select>
-
-          {taskFrequency === "weekly" && (
-            <select className="input" value={taskWeeklyDay ?? ""} onChange={(e)=>setTaskWeeklyDay(e.target.value===""?null:Number(e.target.value))}>
-              <option value="">Any day this week</option>
-              {DAY_SHORT.map((d,i)=><option key={i} value={i}>{d}</option>)}
-            </select>
-          )}
-
-          {taskFrequency === "days" && (
-            <div className="row" style={{ gap: 4, flexWrap: "wrap" }}>
-              {DAY_SHORT.map((d, i) => (
-                <label key={i} className="small" style={{ display:"inline-flex", alignItems:"center", gap:4 }}>
-                  <input
-                    type="checkbox"
-                    checked={taskDays.includes(i)}
-                    onChange={() => {
-                      setTaskDays((prev) => prev.includes(i) ? prev.filter(x=>x!==i) : [...prev, i]);
-                    }}
-                  />
-                  {d}
-                </label>
-              ))}
-            </div>
-          )}
-          <button className="btn" onClick={addTask}>Add Task</button>
-        </div>
-
-        {/* Today (collapsible) */}
-        <div style={{ marginTop: 14 }}>
-          <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
-            <div className="small" style={{ fontWeight:700 }}>Today</div>
-            <button className="btn" onClick={()=>setTasksCollapsedToday(v=>!v)}>{tasksCollapsedToday ? "Expand" : "Collapse"}</button>
+          {/* ✅ Overall summary */}
+          <div className="row" style={{ gap:8, flexWrap:"wrap", marginTop:10 }}>
+            <span className="badge">
+              Overall: {overallOwned}/{overallTotal} ({overallPct}%)
+            </span>
           </div>
-          {!tasksCollapsedToday && (
-            <div style={{ marginTop: 8, display:"grid", gap:8 }}>
-              {tasksToday.length === 0 ? (
-                <div className="small" style={{ opacity:0.8 }}>No tasks due today.</div>
-              ) : tasksToday.map((t) => renderTaskRow(t))}
-            </div>
-          )}
-        </div>
 
-        {/* Completed Today (collapsible, default collapsed) */}
-        <div style={{ marginTop: 14 }}>
-          <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
-            <div className="small" style={{ fontWeight:700 }}>Completed Today</div>
-            <button className="btn" onClick={()=>setTasksCollapsedCompleted(v=>!v)}>{tasksCollapsedCompleted ? "Expand" : "Collapse"}</button>
-          </div>
-          {!tasksCollapsedCompleted && (
-            <div style={{ marginTop: 8, display:"grid", gap:8 }}>
-              {completedToday.length === 0 ? (
-                <div className="small" style={{ opacity:0.8 }}>Nothing here yet.</div>
-              ) : completedToday.map((t) => (
-                editingTaskId === t.id && editDraft
-                ? renderTaskRow(t) // reuse editor UI
-                : (
-                  <div
-                    key={t.id}
-                    className="row"
-                    onClick={()=>startEditTask(t)} // click-to-expand editor
-                    style={{
-                      justifyContent:"space-between",
-                      alignItems:"center",
-                      padding:"6px 10px",
-                      border:"1px solid rgba(255,255,255,0.12)",
-                      borderRadius:8,
-                      opacity:0.9,
-                      cursor: "pointer"
-                    }}>
-                    <div className="small" style={{ fontWeight:700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                      {t.title}
-                    </div>
-                    <div className="row" style={{ gap:6, flexWrap:"wrap" }}>
-                      <span className="badge" style={{ background: ELEMENT_BADGE_BG[t.element] }}>{cap(t.element)}</span>
-                      <span className="badge">{t.frequency === "weekly" ? "This week done" : "Done today"}</span>
-                    </div>
-                  </div>
-                )
-              ))}
-            </div>
-          )}
+          {ELEMENTS.map((el)=> {
+            const stats = elementCounts(el);
+            return (
+              <div key={el} style={{ marginTop:14 }}>
+                <div className="small" style={{ fontWeight:700, marginBottom:6 }}>
+                  {cap(el)} — {stats.owned}/{stats.total} ({stats.pct}%)
+                </div>
+                <div style={{ display:"grid", gap:8 }}>
+                  {[...libraryByElement[el].entries()].map(([rootId, line])=>{
+                    return (
+                      <div key={rootId} className="row" style={{ gap:8, alignItems:"center", flexWrap:"wrap" }}>
+                        {line.map(sp=>{
+                          const owned = !!state.meta.pokedex?.[sp.id]?.owned;
+                          const seen = !!state.meta.pokedex?.[sp.id]?.seen;
+                          const art = sp?.sprite || "/egg.png";
+                          return (
+                            <div key={sp.id} style={{
+                              display:"grid", justifyItems:"center", padding:"6px 8px",
+                              border:"1px solid rgba(255,255,255,0.12)", borderRadius:8, minWidth:90
+                            }}>
+                              <img
+                                src={art}
+                                alt={sp.name}
+                                width="48"
+                                height="48"
+                                style={{
+                                  imageRendering:"pixelated",
+                                  filter: owned ? "none" : "grayscale(1) brightness(0) contrast(1)"
+                                }}
+                                onError={(e)=>{ e.currentTarget.style.opacity = 0.5; }}
+                              />
+                              <div className="small" style={{ marginTop:4, textAlign:"center" }}>
+                                {owned ? sp.name : "???"}
+                              </div>
+                              <div className="small" style={{ opacity:0.7 }}>
+                                {seen ? (owned ? "Owned" : "Seen") : "—"}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
         </div>
+      )}
 
-        {/* All (collapsible) */}
-        <div style={{ marginTop: 14 }}>
-          <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
-            <div className="small" style={{ fontWeight:700 }}>All Tasks</div>
-            <button className="btn" onClick={()=>setTasksCollapsedAll(v=>!v)}>{tasksCollapsedAll ? "Expand" : "Collapse"}</button>
-          </div>
-          {!tasksCollapsedAll && (
-            <div style={{ marginTop: 8, display:"grid", gap:8 }}>
-              {tasksAll.length === 0 ? (
-                <div className="small" style={{ opacity:0.8 }}>No tasks yet. Add a few to start earning candies!</div>
-              ) : tasksAll.map((t) => renderTaskRow(t))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Candy Bag */}
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="big">Candy Bag</div>
-        <div className="row" style={{ marginTop: 8, flexWrap: "wrap", gap: 8 }}>
-          {ELEMENTS.map((el) => (
-            <span key={el} className="badge">{cap(el)}: {state.candies[el]}</span>
-          ))}
-        </div>
-        <div className="row" style={{ marginTop: 8, alignItems: "center", gap: 8 }}>
-          <div className="small" style={{ opacity: 0.8 }}>XP by Element:</div>
-          <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
-            {ELEMENTS.map(el => (
-              <span key={el} className="badge">{cap(el)} XP: {state.meta.xpByElement[el] || 0}</span>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Settings (hidden behind floating ⚙️) */}
+      {/* Settings (floating ⚙️ opens this card inline) */}
       {showSettings && (
         <div className="card" style={{ marginBottom: 12 }}>
           <div className="big">Settings</div>
@@ -1067,8 +1390,49 @@ export default function App() {
               {DAY_SHORT.map((d,i)=><option key={i} value={i}>{d}</option>)}
             </select>
           </div>
+
+          <div className="row" style={{ marginTop:8, gap:8, flexWrap:"wrap" }}>
+            {/* Links moved to persistent footer */}
+            <button
+              className="btn"
+              onClick={()=>setState(s=>({ ...s, meta:{ ...s.meta, onboardingDone: false } }))}
+              title="Replay the tutorial on next load"
+            >
+              Replay Tutorial Next Load
+            </button>
+          </div>
         </div>
       )}
+
+      {/* ✅ Persistent Footer */}
+      <footer
+        style={{
+          marginTop:20,
+          padding:"12px 0",
+          borderTop:"1px solid rgba(255,255,255,0.12)",
+          textAlign:"center",
+          opacity:0.8,
+          fontSize:"0.9em"
+        }}
+      >
+        <a
+          href="https://forms.gle/qbmrn6Bmtveezgt68"
+          target="_blank"
+          rel="noreferrer"
+          className="btn"
+          style={{ marginRight:8 }}
+        >
+          Feedback
+        </a>
+        <a
+          href="https://ko-fi.com/growlingshabithatchlings"
+          target="_blank"
+          rel="noreferrer"
+          className="btn"
+        >
+          Support Growlings ♥
+        </a>
+      </footer>
 
       {/* Floating gear */}
       <button
@@ -1082,29 +1446,6 @@ export default function App() {
       >
         ⚙️
       </button>
-
-      {/* Developer */}
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
-          <div className="big">Developer</div>
-          <button className="btn" onClick={()=>setShowDevPanel(v=>!v)}>{showDevPanel ? "Hide" : "Show"}</button>
-        </div>
-        {showDevPanel && (
-          <>
-            <div className="row" style={{ flexWrap:"wrap", gap:8, marginTop:8 }}>
-              <button className="btn" onClick={()=>setState(s=>({ ...s, meta:{ ...s.meta, devOffsetDays: s.meta.devOffsetDays - 1 } }))}>−1 day</button>
-              <button className="btn" onClick={()=>setState(s=>({ ...s, meta:{ ...s.meta, devOffsetDays: s.meta.devOffsetDays + 1 } }))}>+1 day</button>
-              <button className="btn" onClick={()=>setState(s=>({ ...s, meta:{ ...s.meta, devOffsetDays: 0 } }))}>Reset date</button>
-            </div>
-            <div className="row" style={{ flexWrap:"wrap", gap:8, marginTop:8 }}>
-              {ELEMENTS.map(el => (
-                <button key={el} className="btn" onClick={() => earnCandy(el)}>+1 {cap(el)} (dev)</button>
-              ))}
-              <button className="btn" onClick={addEggSlotDev}>+ Egg (dev, free)</button>
-            </div>
-          </>
-        )}
-      </div>
 
       {/* Evolution Choice Modal */}
       {showEvoModal && (
@@ -1123,6 +1464,7 @@ export default function App() {
               {evoChoices.map((ev, i) => {
                 const sp = dex.getSpecies(ev.to);
                 const art = sp?.sprite || "/egg.png";
+                const owned = !!state.meta.pokedex?.[sp?.id || ""]?.owned;
                 return (
                   <button
                     key={i}
@@ -1130,9 +1472,18 @@ export default function App() {
                     style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "flex-start" }}
                     onClick={() => confirmEvolution(ev)}
                   >
-                    <img src={art} alt={sp?.name || "Evolution"} width="32" height="32" style={{ imageRendering: "pixelated" }} />
+                    <img
+                      src={art}
+                      alt={sp?.name || "Evolution"}
+                      width="32"
+                      height="32"
+                      style={{
+                        imageRendering: "pixelated",
+                        filter: owned ? "none" : "grayscale(1) brightness(0) contrast(1)"
+                      }}
+                    />
                     <div style={{ textAlign: "left" }}>
-                      <div style={{ fontWeight: 700 }}>{sp?.name || "???"}</div>
+                      <div style={{ fontWeight: 700 }}>{owned ? (sp?.name || "???") : "???"}</div>
                       <div className="small" style={{ opacity: 0.8 }}>Cost: {formatCost(ev.cost)}</div>
                     </div>
                   </button>
@@ -1143,6 +1494,45 @@ export default function App() {
               <button className="btn" onClick={() => { setShowEvoModal(false); setEvoChoices([]); }}>
                 Cancel
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ✅ Evolution Congrats Modal */}
+      {showEvoCongrats && (
+        <div style={{
+          position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
+          display:"flex", alignItems:"center", justifyContent:"center", zIndex:10000
+        }}>
+          <div className="card" style={{ maxWidth:460, width:"92%", padding:16, textAlign:"center" }}>
+            <div className="big">Evolution Complete!</div>
+            <div className="small" style={{ marginTop:6 }}>
+              {(showEvoCongrats.from?.name || "Your Growling")} evolved into <strong>{showEvoCongrats.to?.name || "a new form"}</strong> 🎉
+            </div>
+
+            <div className="row" style={{ gap:16, alignItems:"center", justifyContent:"center", marginTop:12 }}>
+              <div style={{ display:"grid", justifyItems:"center" }}>
+                <img
+                  src={showEvoCongrats.from?.sprite || "/egg.png"}
+                  width="64" height="64" alt={showEvoCongrats.from?.name || "From"}
+                  style={{ imageRendering:"pixelated" }}
+                />
+                <div className="small" style={{ opacity:0.85, marginTop:4 }}>{showEvoCongrats.from?.name || "—"}</div>
+              </div>
+              <div className="big">→</div>
+              <div style={{ display:"grid", justifyItems:"center" }}>
+                <img
+                  src={showEvoCongrats.to?.sprite || "/egg.png"}
+                  width="64" height="64" alt={showEvoCongrats.to?.name || "To"}
+                  style={{ imageRendering:"pixelated" }}
+                />
+                <div className="small" style={{ opacity:0.85, marginTop:4 }}>{showEvoCongrats.to?.name || "—"}</div>
+              </div>
+            </div>
+
+            <div className="row" style={{ marginTop:12, justifyContent:"center" }}>
+              <button className="btn" onClick={()=>setShowEvoCongrats(null)}>Sweet!</button>
             </div>
           </div>
         </div>
@@ -1175,11 +1565,13 @@ export default function App() {
           position:"fixed", inset:0, background:"rgba(0,0,0,0.5)",
           display:"flex", alignItems:"center", justifyContent:"center", zIndex:9999
         }}>
-          <div className="card" style={{ maxWidth:360, width:"90%", padding:16 }}>
+          <div className="card" style={{ maxWidth:420, width:"90%", padding:16 }}>
             <div className="big">Shop</div>
             <div className="small" style={{ marginTop:6, opacity:0.9 }}>
               💎 {state.meta.gems || 0} gems available
             </div>
+
+            {/* Buy Egg */}
             <div className="row" style={{ marginTop:12, gap:8, alignItems:"center", justifyContent:"space-between" }}>
               <div className="row" style={{ gap:8, alignItems:"center" }}>
                 <img src="/egg.png" width="24" height="24" style={{ imageRendering:"pixelated" }} alt="Egg" />
@@ -1189,6 +1581,35 @@ export default function App() {
                 {(state.meta.gems||0) < 20 ? "Not enough" : "Buy"}
               </button>
             </div>
+
+            {/* Buy Candies (5 gems each) */}
+            <div className="small" style={{ marginTop:12, opacity:0.9 }}>Candies — 5 💎 each</div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:6 }}>
+              {ELEMENTS.map(el=>(
+                <div key={el} className="row" style={{ alignItems:"center", justifyContent:"space-between", border:"1px solid rgba(255,255,255,0.12)", borderRadius:8, padding:"6px 8px" }}>
+                  <div className="row" style={{ gap:8, alignItems:"center" }}>
+                    <span className="badge" style={{ background: ELEMENT_BADGE_BG[el] }}>{cap(el)}</span>
+                    <div className="small">x {state.candies[el]}</div>
+                  </div>
+                  <button
+                    className="btn"
+                    disabled={(state.meta.gems||0) < 5}
+                    onClick={()=>{
+                      setState(s=>{
+                        const next = structuredClone(s);
+                        if ((next.meta.gems||0) < 5) return s;
+                        next.meta.gems -= 5;
+                        next.candies[el] = (next.candies[el]||0) + 1;
+                        return next;
+                      })
+                    }}
+                  >
+                    {(state.meta.gems||0) < 5 ? "Need 5💎" : "Buy"}
+                  </button>
+                </div>
+              ))}
+            </div>
+
             <div className="row" style={{ marginTop:12, justifyContent:"flex-end" }}>
               <button className="btn" onClick={()=>setShowShop(false)}>Close</button>
             </div>
@@ -1241,6 +1662,42 @@ export default function App() {
             <div className="row" style={{ marginTop:12, justifyContent:"flex-end", gap:8 }}>
               <div className="small" style={{ opacity:0.85 }}>Selected: {state.activeTeam.length} / 6</div>
               <button className="btn" onClick={()=>setShowManageTeam(false)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Creature Profile Modal */}
+      {showProfile && (
+        <div style={{
+          position:"fixed", inset:0, background:"rgba(0,0,0,0.5)",
+          display:"flex", alignItems:"center", justifyContent:"center", zIndex:9999
+        }}>
+          <div className="card" style={{ maxWidth:420, width:"95%", padding:16 }}>
+            <div className="big">Profile</div>
+            {creature ? (
+              <>
+                <div className="row" style={{ gap:10, alignItems:"center", marginTop:8 }}>
+                  <img src={sprite} width="48" height="48" style={{ imageRendering:"pixelated" }} alt={creature.name} />
+                  <div>
+                    <div className="small" style={{ fontWeight:700 }}>{nickDisplay}</div>
+                    <div className="small" style={{ opacity:0.8 }}>{caps(creature.elements || [])}</div>
+                  </div>
+                </div>
+                <div className="small" style={{ marginTop:10 }}>
+                  Total Creature XP: <strong>{activeCreature.xpTotal || 0}</strong>
+                </div>
+                <div className="row" style={{ flexWrap:"wrap", gap:8, marginTop:6 }}>
+                  {ELEMENTS.map(el=>(
+                    <span key={el} className="badge">{cap(el)} XP: {activeCreature.xpByElement?.[el] || 0}</span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="small" style={{ marginTop:8 }}>No creature yet — hatch your egg!</div>
+            )}
+            <div className="row" style={{ marginTop:12, justifyContent:"flex-end" }}>
+              <button className="btn" onClick={()=>setShowProfile(false)}>Close</button>
             </div>
           </div>
         </div>

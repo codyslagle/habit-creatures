@@ -1,0 +1,51 @@
+{
+  "fire": [
+    "20-minute walk outside",
+    "10 push-ups + 20 squats circuit",
+    "Stretch or mobility (10 min)",
+    "Bike/elliptical/jog (15–20 min)",
+    "Light dumbbell workout (one muscle group)"
+  ],
+  "water": [
+    "Drink 24–32 oz water",
+    "5-minute breathing or mindfulness",
+    "Bed on time or screens-off 30 min early",
+    "Skincare basics (wash + moisturize)",
+    "Take vitamins/meds"
+  ],
+  "earth": [
+    "Dishes to empty sink",
+    "Tidy one hotspot (10 min)",
+    "Laundry: wash/swap/fold one load",
+    "Take out trash/recycling",
+    "Clean counters or sweep/vac one area"
+  ],
+  "air": [
+    "Read 10 pages or 15 minutes",
+    "One tutorial/lesson + 3 notes",
+    "Practice a skill (15 min)",
+    "Write a short summary of learning",
+    "Spaced-repetition/flashcards session"
+  ],
+  "light": [
+    "Sketch or doodle (10–15 min)",
+    "Write 100–200 words",
+    "Work on creative project (15 min)",
+    "Take and edit one photo",
+    "Design one emote/badge iteration"
+  ],
+  "metal": [
+    "One 10–25 min “frog” task",
+    "Inbox to zero or 10-min triage",
+    "Update project/IDP tracker",
+    "Schedule or prep for a meeting",
+    "Clear desk + set tomorrow’s top 3"
+  ],
+  "heart": [
+    "Message someone you care about",
+    "Plan/confirm a hangout/date",
+    "Call a family member (5–10 min)",
+    "Compliment/thank a coworker",
+    "Engage meaningfully in a community"
+  ]
+}

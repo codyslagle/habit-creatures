@@ -1,19 +1,52 @@
-:root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"; }
+/* ================== Custom Font ================== */
+@font-face {
+  font-family: 'VT323';
+  src: url('/fonts/vt323/VT323.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ================== Global Defaults ================== */
+:root {
+  --font-body: 'VT323', system-ui, sans-serif;
+  font-family: var(--font-body);
+  font-size: 18px;              /* up from 16 for readability */
+  line-height: 1.35;            /* VT323 breathes better with extra line height */
+  letter-spacing: 0.2px;        /* tiny tracking helps at this size */
+}
+
 * { box-sizing: border-box; }
-body { margin: 0; background:#0f1220; color:#f2f6ff; }
+body {
+  margin: 0;
+  background:#0f1220;
+  color:#f2f6ff;
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 button { font: inherit; }
+
+/* ================== Your Existing Styles (with small tweaks) ================== */
 .container { max-width: 560px; margin: 0 auto; padding: 16px; }
 .card { background:#171a2b; border:1px solid #222544; border-radius: 12px; padding: 16px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; }
 .badge { padding: 6px 10px; border-radius: 999px; border:1px solid #2b2f55; background:#111327; }
 .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
-.big { font-size: 22px; font-weight: 700; }
-.small { opacity: 0.8; font-size: 14px; }
+
+/* Type scale tuned for VT323 */
+.big   { font-size: 24px; font-weight: 700; }   /* faux-bold looks good here */
+.small { opacity: 0.85; font-size: 16px; }      /* up from 14 for legibility */
+
 .btn { padding: 10px 14px; background:#2a3061; border:1px solid #39408a; border-radius: 10px; color:#fff; cursor:pointer; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .progress { width:100%; height:10px; background:#0b0d1a; border-radius: 999px; overflow: hidden; border:1px solid #23274a; }
 .progress > div { height:100%; background:#5f76ff; width:0%; transition: width .25s; }
-.sprite { width: 96px; height: 96px; image-rendering: pixelated; border-radius: 8px; background:#0b0d1a; display:flex; align-items:center; justify-content:center; border:1px solid #23274a;}
+
+.sprite { width: 96px; height: 96px; image-rendering: pixelated; border-radius: 8px; background:#0b0d1a; display:flex; align-items:center; justify-content:center; border:1px solid #23274a; }
+
 .type-dot { width:10px; height:10px; border-radius:999px; display:inline-block; margin-right:6px; border:1px solid #0003; }
 .fire{ background:#ff6b6b;}
 .water{ background:#4dabf7;}
