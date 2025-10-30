@@ -1,10 +1,14 @@
 ﻿id,stage,element1,element2,childCost,name,parentId,evolutions
-base_whisple,0,air,,,Whisple,,s1_gustowl:air:5
+base_whisple,0,air,,,Whisple,,s1_gustowl:air:5 || s1_tokolet:air:5
 s1_gustowl,1,air,,air:5,Gustowl,base_whisple,s2_aerialove:air:5;heart:5 || s2_galeon:air:5;light:5
 s2_aerialove,2,air,heart,air:5;heart:5,Aerialove,s1_gustowl,
 s2_galeon,2,air,light,air:5;light:5,Galeon,s1_gustowl,
+s1_tokolet,1,air,,air:5,Tokolet,base_whisple,s2_skylure:air:5;light:5 || s2_zephyrox:air:5;metal:5
+s2_skylure,2,air,light,air:5;light:5,Skylure,s1_tokolet,
+s2_zephyrox,2,air,metal,air:5;metal:5,Zephyrox,s1_tokolet,
 base_muddlit,0,earth,,,Muddlit ,,s1_pebblit:earth:5 || s1_terracore:earth:5
-s1_pebblit,1,earth,,earth:5,Pebblit,base_muddlit,s2_glimmerscarab:earth:5;light:5 || s2_alloyscarab:earth:5;metal:5
+s1_pebblit,1,earth,,earth:5,Pebblit,base_muddlit,s2_petrikeet:earth:5;air:5 || s2_glimmerscarab:earth:5;light:5 || s2_alloyscarab:earth:5;metal:5
+s2_petrikeet,2,earth,air,earth:5;air:5,Petrikeet,s1_pebblit,
 s2_glimmerscarab,2,earth,light,earth:5;light:5,Glimmerscarab,s1_pebblit,
 s2_alloyscarab,2,earth,metal,earth:5;metal:5,Alloyscarab,s1_pebblit,
 s1_terracore,1,earth,,earth:5,Terracore,base_muddlit,s2_gravolith:earth:10 || s2_grimite:earth:5;heart:5 || s2_lithyte:earth:5;light:5 || s2_terraquor:earth:5;water:5
@@ -12,7 +16,10 @@ s2_gravolith,2,earth,,earth:10,Gravolith,s1_terracore,
 s2_grimite,2,earth,heart,earth:5;heart:5,Grimite,s1_terracore,
 s2_lithyte,2,earth,light,earth:5;light:5,Lithyte,s1_terracore,
 s2_terraquor,2,earth,water,earth:5;water:5,Terraquor,s1_terracore,
-base_sparklet,0,fire,,,Sparklet,,s1_emberit:fire:5 || s1_flarefox:fire:5 || s1_pyroxy:fire:5
+base_sparklet,0,fire,,,Sparklet,,s1_atlaspin:fire:5 || s1_emberit:fire:5 || s1_flarefox:fire:5 || s1_pyroxy:fire:5
+s1_atlaspin,1,fire,,fire:5,Atlaspin,base_sparklet,s2_magmire:fire:5;earth:5 || s2_solarin:fire:5;light:5
+s2_magmire,2,fire,earth,fire:5;earth:5,Magmire,s1_atlaspin,
+s2_solarin,2,fire,light,fire:5;light:5,Solarin,s1_atlaspin,
 s1_emberit,1,fire,,fire:5,Emberit,base_sparklet,s2_flaregon:fire:5;air:5 || s2_pyraxion:fire:5;earth:5
 s2_flaregon,2,fire,air,fire:5;air:5,Flaregon,s1_emberit,
 s2_pyraxion,2,fire,earth,fire:5;earth:5,Pyraxion,s1_emberit,
@@ -20,17 +27,28 @@ s1_flarefox,1,fire,,fire:5,Flarefox,base_sparklet,s2_flareheart:fire:5;heart:5 |
 s2_flareheart,2,fire,heart,fire:5;heart:5,Flareheart,s1_flarefox,
 s2_forgefang,2,fire,metal,fire:5;metal:5,Forgefang,s1_flarefox,
 s1_pyroxy,1,fire,,fire:5,Pyroxy,base_sparklet,
-base_amorb,0,heart,,,Amorb,,s1_snugglepuff:heart:5
+base_amorb,0,heart,,,Amorb,,s1_snugglepuff:heart:5 || s1_starrel:heart:5
 s1_snugglepuff,1,heart,,heart:5,Snugglepuff,base_amorb,s2_starhug:heart:5;light:5 || s2_tinfriend:heart:5;metal:5
 s2_starhug,2,heart,light,heart:5;light:5,Starhug,s1_snugglepuff,
 s2_tinfriend,2,heart,metal,heart:5;metal:5,Tinfriend,s1_snugglepuff,
-base_lumee,0,light,,,Lumee,,s1_luminx:light:5
+s1_starrel,1,heart,,heart:5,Starrel,base_amorb,s2_florrel:heart:5;earth:5 || s2_seraphent:heart:5;light:5
+s2_florrel,2,heart,earth,heart:5;earth:5,Florrel,s1_starrel,
+s2_seraphent,2,heart,light,heart:5;light:5,Seraphent,s1_starrel,
+base_lumee,0,light,,,Lumee,,s1_luminx:light:5 || s1_voltzel:light:5
 s1_luminx,1,light,,light:5,Luminx,base_lumee,
-base_alooy,0,metal,,,Alooy,,s1_cogpup:metal:5
+s1_voltzel,1,light,,light:5,Voltzel,base_lumee,s2_flarezel:light:5;fire:5 || s2_lustrail:light:5;water:5
+s2_flarezel,2,light,fire,light:5;fire:5,Flarezel,s1_voltzel,
+s2_lustrail,2,light,water,light:5;water:5,Lustrail,s1_voltzel,
+base_alooy,0,metal,,,Alooy,,s1_aerweld:metal:5 || s1_cogpup:metal:5
+s1_aerweld,1,metal,,metal:5,Aerweld,base_alooy,s2_arctinel:metal:5;air:5
+s2_arctinel,2,metal,air,metal:5;air:5,Arctinel,s1_aerweld,
 s1_cogpup,1,metal,,metal:5,Cogpup,base_alooy,s2_cindraven:metal:5;fire:5 || s2_heartsteel:metal:5;heart:5
 s2_cindraven,2,metal,fire,metal:5;fire:5,Cindraven,s1_cogpup,
 s2_heartsteel,2,metal,heart,metal:5;heart:5,Heartsteel,s1_cogpup,
-base_droplin,0,water,,,Droplin,,s1_puffwin:water:5 || s1_shellfin:water:5
+base_droplin,0,water,,,Droplin,,s1_dripplet:water:5 || s1_puffwin:water:5 || s1_shellfin:water:5
+s1_dripplet,1,water,,water:5,Dripplet,base_droplin,s2_coralon:water:5;earth:5 || s2_aqualis:water:5;air:5
+s2_coralon,2,water,earth,water:5;earth:5,Coralon,s1_dripplet,
+s2_aqualis,2,water,air,water:5;air:5,Aqualis,s1_dripplet,
 s1_puffwin,1,water,,water:5,Puffwin,base_droplin,s2_galeguin:water:5;air:5 || s2_frostern:water:5;metal:5 || s2_aquafluff:water:10
 s2_galeguin,2,water,air,water:5;air:5,Galeguin,s1_puffwin,
 s2_frostern,2,water,metal,water:5;metal:5,Frostern,s1_puffwin,
