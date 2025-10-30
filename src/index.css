@@ -52,7 +52,6 @@ body{
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  /* subtle base layer to ensure solid fill */
   background-image:
     radial-gradient(1200px 800px at 20% -10%, rgba(176,142,255,0.10), transparent 55%),
     radial-gradient(1000px 700px at 110% 10%, rgba(229,185,255,0.12), transparent 50%),
@@ -71,7 +70,6 @@ button { font: inherit; }
 }
 .card .big + .small{ color: var(--ink-dim); }
 
-/* Header strip */
 .card > .row:first-child .big{
   padding: 6px 10px;
   background: linear-gradient(180deg, var(--bg-3), transparent);
@@ -92,14 +90,14 @@ button { font: inherit; }
 }
 
 /* Type scale tuned for VT323 */
-.big{ font-size: 26px; font-weight: 700; letter-spacing: 0.2px; }
+.big{ font-size: 26px; font-weight: 400; letter-spacing: 0.2px; }
 .small{ opacity: 0.9; font-size: 16px; }
 
 /* ================== Buttons ================== */
 .btn{
   padding: 10px 14px;
   border-radius: 12px;
-  border: 1px solid #52448c; /* lavender edge */
+  border: 1px solid #52448c;
   background: linear-gradient(180deg, #3a2f66, #2a2454);
   color: #fff;
   cursor: pointer;
@@ -117,14 +115,12 @@ button { font: inherit; }
 }
 .btn:disabled{ opacity: .55; cursor: not-allowed; box-shadow:none; }
 
-/* Ghost */
 .btn--ghost{
   background: rgba(27,22,45,0.6);
   border-color: var(--line-2);
 }
 .btn--ghost:hover{ border-color: #6a59c4; }
 
-/* Accent (primary actions like Evolve) */
 .btn--accent{
   background: linear-gradient(180deg, #b08eff, #9a77f2);
   border-color: #b08eff;
@@ -146,7 +142,6 @@ button { font: inherit; }
   height:100%;
   width:0%;
   transition: width .25s;
-  /* lavender candy stripe */
   background:
     repeating-linear-gradient(
       90deg,
@@ -167,15 +162,15 @@ button { font: inherit; }
   box-shadow: 0 8px 24px rgba(0,0,0,0.35);
 }
 
-/* ================== Type Dots (muted to match palette) ================== */
+/* ================== Type Dots ================== */
 .type-dot{ width:10px; height:10px; border-radius:999px; display:inline-block; margin-right:6px; border:1px solid #0003; }
-.fire{  background:#ff7a86; }   /* warm pink-coral */
-.water{ background:#9bbcff; }   /* periwinkle */
-.earth{ background:#a8e0a2; }   /* minty green */
-.air{   background:#c6b9ff; }   /* pale lavender */
-.light{ background:#ffd4a6; }   /* soft peach light */
-.metal{ background:#c0c7d6; }   /* soft steel-blue */
-.heart{ background:#ff9bb8; }   /* rosy pink */
+.fire{  background:#ff7a86; }
+.water{ background:#9bbcff; }
+.earth{ background:#a8e0a2; }
+.air{   background:#c6b9ff; }
+.light{ background:#ffd4a6; }
+.metal{ background:#c0c7d6; }
+.heart{ background:#ff9bb8; }
 
 /* ================== Inputs ================== */
 .input{
@@ -192,7 +187,7 @@ button { font: inherit; }
   box-shadow: 0 0 0 2px rgba(122,104,232,0.25);
 }
 
-/* ================== Cozy focus ring ================== */
+/* ================== Focus ring ================== */
 button:focus-visible, .btn:focus-visible, .input:focus-visible{
   outline: none;
   box-shadow: 0 0 0 2px rgba(176,142,255,0.28), 0 0 0 4px rgba(229,185,255,0.18);
