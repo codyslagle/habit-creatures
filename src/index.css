@@ -1,4 +1,4 @@
-/* ================== Custom Font ================== */
+/* ================== Font ================== */
 @font-face {
   font-family: 'VT323';
   src: url('/fonts/vt323/VT323.woff2') format('woff2');
@@ -7,51 +7,206 @@
   font-display: swap;
 }
 
-/* ================== Global Defaults ================== */
-:root {
+/* ================== Cozy Design Tokens — Twilight Lavender ================== */
+:root{
   --font-body: 'VT323', system-ui, sans-serif;
+
+  /* Dreamy dusk base */
+  --bg-1: #151225;         /* page bg */
+  --bg-2: #1b162d;         /* card bg */
+  --bg-3: #231b36;         /* card header/alt bg */
+  --ink:  #f3f0ff;         /* main text */
+  --ink-dim: #d2c5ff;      /* secondary text */
+
+  /* Accents (lavender + rose + peach glow) */
+  --accent:   #b08eff;     /* primary lavender */
+  --accent-2: #e5b9ff;     /* soft lilac */
+  --accent-3: #fbd4b4;     /* peach highlight */
+
+  /* Lines / borders */
+  --line-1: #2a2240;
+  --line-2: #342b55;
+
+  /* Radii / shadows */
+  --radius-s: 12px;
+  --radius-m: 16px;
+  --shadow-1: 0 6px 20px rgba(0,0,0,0.35), 0 1px 0 rgba(255,255,255,0.03) inset;
+  --shadow-glow: 0 0 0 1px rgba(176,142,255,0.18), 0 8px 30px rgba(229,185,255,0.10);
+
+  /* Type */
   font-family: var(--font-body);
-  font-size: 18px;              /* up from 16 for readability */
-  line-height: 1.35;            /* VT323 breathes better with extra line height */
-  letter-spacing: 0.2px;        /* tiny tracking helps at this size */
+  font-size: 18px;
+  line-height: 1.38;
+  letter-spacing: 0.15px;
 }
 
+/* ================== Page ================== */
 * { box-sizing: border-box; }
-body {
-  margin: 0;
-  background:#0f1220;
-  color:#f2f6ff;
+body{
+  margin:0;
+  background:
+    radial-gradient(1200px 800px at 20% -10%, rgba(176,142,255,0.10), transparent 55%),
+    radial-gradient(1000px 700px at 110% 10%, rgba(229,185,255,0.12), transparent 50%),
+    var(--bg-1);
+  color: var(--ink);
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* subtle base layer to ensure solid fill */
+  background-image:
+    radial-gradient(1200px 800px at 20% -10%, rgba(176,142,255,0.10), transparent 55%),
+    radial-gradient(1000px 700px at 110% 10%, rgba(229,185,255,0.12), transparent 50%),
+    linear-gradient(var(--bg-1), var(--bg-1));
 }
-
 button { font: inherit; }
 
-/* ================== Your Existing Styles (with small tweaks) ================== */
-.container { max-width: 560px; margin: 0 auto; padding: 16px; }
-.card { background:#171a2b; border:1px solid #222544; border-radius: 12px; padding: 16px; }
-.row { display: flex; gap: 8px; flex-wrap: wrap; }
-.badge { padding: 6px 10px; border-radius: 999px; border:1px solid #2b2f55; background:#111327; }
-.grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+/* ================== Layout & Cards ================== */
+.container{ max-width: 620px; margin: 0 auto; padding: 18px; }
+.card{
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-2));
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius-m);
+  padding: 16px;
+  box-shadow: var(--shadow-1);
+}
+.card .big + .small{ color: var(--ink-dim); }
+
+/* Header strip */
+.card > .row:first-child .big{
+  padding: 6px 10px;
+  background: linear-gradient(180deg, var(--bg-3), transparent);
+  border-radius: 10px;
+}
+
+/* ================== Primitives ================== */
+.row{ display:flex; gap:8px; flex-wrap:wrap; align-items: center; }
+.grid{ display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+
+.badge{
+  padding: 6px 10px;
+  border-radius: 999px;
+  border:1px solid var(--line-2);
+  background: rgba(27,22,45,0.8);
+  color: var(--ink);
+  backdrop-filter: blur(2px);
+}
 
 /* Type scale tuned for VT323 */
-.big   { font-size: 24px; font-weight: 700; }   /* faux-bold looks good here */
-.small { opacity: 0.85; font-size: 16px; }      /* up from 14 for legibility */
+.big{ font-size: 26px; font-weight: 700; letter-spacing: 0.2px; }
+.small{ opacity: 0.9; font-size: 16px; }
 
-.btn { padding: 10px 14px; background:#2a3061; border:1px solid #39408a; border-radius: 10px; color:#fff; cursor:pointer; }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* ================== Buttons ================== */
+.btn{
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid #52448c; /* lavender edge */
+  background: linear-gradient(180deg, #3a2f66, #2a2454);
+  color: #fff;
+  cursor: pointer;
+  transition: transform .06s ease, box-shadow .15s ease, background .2s ease, border-color .2s ease;
+  box-shadow: 0 2px 0 rgba(0,0,0,0.3);
+}
+.btn:hover{
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-glow);
+  border-color: #6a59c4;
+}
+.btn:active{
+  transform: translateY(0);
+  box-shadow: 0 1px 0 rgba(0,0,0,0.4) inset;
+}
+.btn:disabled{ opacity: .55; cursor: not-allowed; box-shadow:none; }
 
-.progress { width:100%; height:10px; background:#0b0d1a; border-radius: 999px; overflow: hidden; border:1px solid #23274a; }
-.progress > div { height:100%; background:#5f76ff; width:0%; transition: width .25s; }
+/* Ghost */
+.btn--ghost{
+  background: rgba(27,22,45,0.6);
+  border-color: var(--line-2);
+}
+.btn--ghost:hover{ border-color: #6a59c4; }
 
-.sprite { width: 96px; height: 96px; image-rendering: pixelated; border-radius: 8px; background:#0b0d1a; display:flex; align-items:center; justify-content:center; border:1px solid #23274a; }
+/* Accent (primary actions like Evolve) */
+.btn--accent{
+  background: linear-gradient(180deg, #b08eff, #9a77f2);
+  border-color: #b08eff;
+  color: #1e1733;
+}
+.btn--accent:hover{
+  box-shadow: 0 0 0 2px rgba(176,142,255,0.25);
+}
 
-.type-dot { width:10px; height:10px; border-radius:999px; display:inline-block; margin-right:6px; border:1px solid #0003; }
-.fire{ background:#ff6b6b;}
-.water{ background:#4dabf7;}
-.earth{ background:#94d82d;}
-.air{ background:#a5d8ff;}
-.light{ background:#ffe066;}
-.metal{ background:#adb5bd;}
-.heart{ background:#ff8787;}
+/* ================== Progress ================== */
+.progress{
+  width:100%; height:12px;
+  background:#100d1f;
+  border-radius: 999px; overflow:hidden;
+  border:1px solid var(--line-1);
+  position: relative;
+}
+.progress > div{
+  height:100%;
+  width:0%;
+  transition: width .25s;
+  /* lavender candy stripe */
+  background:
+    repeating-linear-gradient(
+      90deg,
+      #8d79ff 0 10px,
+      #a28fff 10px 20px
+    );
+  box-shadow: inset 0 0 10px rgba(255,255,255,0.05);
+}
+
+/* ================== Sprites ================== */
+.sprite{
+  width: 96px; height: 96px;
+  image-rendering: pixelated;
+  border-radius: 14px;
+  background: linear-gradient(180deg,#120f22,#0f0c1a);
+  display:flex; align-items:center; justify-content:center;
+  border:1px solid var(--line-1);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+
+/* ================== Type Dots (muted to match palette) ================== */
+.type-dot{ width:10px; height:10px; border-radius:999px; display:inline-block; margin-right:6px; border:1px solid #0003; }
+.fire{  background:#ff7a86; }   /* warm pink-coral */
+.water{ background:#9bbcff; }   /* periwinkle */
+.earth{ background:#a8e0a2; }   /* minty green */
+.air{   background:#c6b9ff; }   /* pale lavender */
+.light{ background:#ffd4a6; }   /* soft peach light */
+.metal{ background:#c0c7d6; }   /* soft steel-blue */
+.heart{ background:#ff9bb8; }   /* rosy pink */
+
+/* ================== Inputs ================== */
+.input{
+  background: rgba(27,22,45,0.75);
+  border: 1px solid var(--line-2);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 8px 10px;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.input:focus{
+  border-color: #7a68e8;
+  box-shadow: 0 0 0 2px rgba(122,104,232,0.25);
+}
+
+/* ================== Cozy focus ring ================== */
+button:focus-visible, .btn:focus-visible, .input:focus-visible{
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(176,142,255,0.28), 0 0 0 4px rgba(229,185,255,0.18);
+  border-color: var(--accent);
+}
+
+/* ================== Reduced Motion ================== */
+@media (prefers-reduced-motion: reduce){
+  .btn, .progress > div { transition: none; }
+}
+
+/* ================== Tiny Helpers ================== */
+.hr{
+  height:1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  margin: 10px 0;
+}
