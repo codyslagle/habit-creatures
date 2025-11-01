@@ -5,205 +5,36 @@ import suggestions from "./data/taskSuggestions.json";
 
 /* ===================== Helpers & Constants ===================== */
 
-const SPRITE_BOX_PX = 64;
-
+import { SPRITE_BOX_PX } from "./constants/ui";
+import {
+  nowISO, localDateStr, addDays, addWeeks, addMonthsClamped,
+  startOfWeek, weekKeyBy, lastDayOfMonth,
+  nowWithOffset, todayKeyWithOffset, weekKeyWithOffset
+} from "./utils/dates";
 const blankTally = () => ({ fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 });
 const blankXPByEl = () => ({ fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 });
-
-const cap = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
-const caps = (arr) => arr.map(cap).join(" / ");
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const nowISO = () => new Date().toISOString();
-const pluralize = (n, one, many) => (n === 1 ? one : many);
-const totalCost = (ev) => Object.values(ev.cost || {}).reduce((a,b)=>a+(b||0), 0);
 const canAfford = (candies, cost) =>
   Object.entries(cost || {}).every(([el, amt]) => (candies[el] || 0) >= amt);
-const formatCost = (cost) => {
-  const parts = Object.entries(cost || {})
-    .filter(([,amt]) => amt > 0)
-    .map(([el,amt]) => `${amt} ${cap(el)}`);
-  return parts.length ? parts.join(" + ") : "—";
-};
-
-// Element labels for dropdown
-const ELEMENT_LABEL = {
-  fire: "Fire (Fitness)",
-  water: "Water (Self-C Care)",
-  earth: "Earth (Chores)",
-  air: "Air (Learning)",
-  light: "Light (Creativity)",
-  metal: "Metal (Work/Productivity)",
-  heart: "Heart (Social)"
-};
-
-// Subtle badge background per element
-const ELEMENT_BADGE_BG = {
-  fire:  "rgba(255, 99, 71, 0.18)",
-  water: "rgba(80, 160, 255, 0.18)",
-  earth: "rgba(120, 180, 120, 0.20)",
-  air:   "rgba(180, 220, 255, 0.18)",
-  light: "rgba(255, 240, 150, 0.18)",
-  metal: "rgba(180, 180, 200, 0.20)",
-  heart: "rgba(255, 150, 200, 0.18)",
-};
-
-// XP per difficulty
-const XP_BY_DIFFICULTY = { easy: 5, med: 10, hard: 20 };
-
-/* ===== Level curve ===== */
-const xpToLevel = (level) => Math.round(100 * Math.pow(1.25, Math.max(0, level - 1)));
-function levelInfoFromTotalXP(totalXP) {
-  let level = 1;
-  let spent = 0;
-  let need = xpToLevel(level);
-  while (totalXP >= spent + need) {
-    spent += need;
-    level += 1;
-    need = xpToLevel(level);
-  }
-  return {
-    level,
-    currentIntoLevel: totalXP - spent,
-    neededForLevel: need,
-    xpToNext: need - (totalXP - spent)
-  };
-}
-const nextLevelAt = (level) => xpToLevel(level); // cost to go from level -> level+1
-
-// Creature curve multiplier by stage (0 base, 1 stage1, 2 stage2)
-const CREATURE_STAGE_MULT = { 0: 1.0, 1: 1.15, 2: 1.30 };
-function creatureLevelInfo(totalXP, stage=0) {
-  // scale the requirement up by stage multiplier
-  let level = 1;
-  let spent = 0;
-  const mult = CREATURE_STAGE_MULT[String(stage)] ?? 1.0;
-  const needAt = (lv) => Math.round(xpToLevel(lv) * mult);
-  let need = needAt(level);
-  while (totalXP >= spent + need) {
-    spent += need;
-    level += 1;
-    need = needAt(level);
-  }
-  return {
-    level,
-    currentIntoLevel: totalXP - spent,
-    neededForLevel: need,
-    xpToNext: need - (totalXP - spent)
-  };
-}
+import { cap, caps, pluralize, formatCost } from "./utils/text";
+import { clamp, totalCost, CREATURE_STAGE_MULT } from "./utils/num";
+import { xpToLevel, levelInfoFromTotalXP, creatureLevelInfo, nextLevelAt } from "./utils/xp";
+import { DAY_SHORT, XP_BY_DIFFICULTY, ELEMENT_LABEL, ELEMENT_BADGE_BG } from "./utils/tasks";
+import { isDueTodayAdvanced, canCompleteNowAdvanced } from "./logic/recurrence";
+import { initialState } from "./state/initial";
+import { loadState, saveState, newTask, withDefaults } from "./state/storage";
 
 // Date helpers
-function localDateStr(d = new Date()) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth()+1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
-function addWeeks(d, n) { return addDays(d, 7*n); }
-function lastDayOfMonth(y, m /*0..11*/) { return new Date(y, m+1, 0).getDate(); }
-function addMonthsClamped(d, n, dayPreference=null) {
-  const y = d.getFullYear();
-  const m = d.getMonth();
-  const target = new Date(d);
-  target.setMonth(m + n);
-  const wantDay = dayPreference ?? d.getDate();
-  const maxDay = lastDayOfMonth(target.getFullYear(), target.getMonth());
-  target.setDate(Math.min(wantDay, maxDay));
-  return target;
-}
 function sameDayKey(a, b) { return localDateStr(a) === localDateStr(b); }
-
-// Week math with custom start (0=Sun..6=Sat)
-function startOfWeek(d, weekStart=0) {
-  const date = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const day = date.getDay();
-  const diff = (day - weekStart + 7) % 7;
-  date.setDate(date.getDate() - diff);
-  date.setHours(0,0,0,0);
-  return date;
-}
-function weekKeyBy(d, weekStart=0) {
-  const s = startOfWeek(d, weekStart);
-  return `${s.getFullYear()}-${String(s.getMonth()+1).padStart(2,"0")}-${String(s.getDate()).padStart(2,"0")}`;
-}
-
-// For “Specific Days” frequency UI
-const DAY_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
 /* ===================== Save & Migration ===================== */
 
 const SAVE_VERSION = 8; // bumped for snooze logic + hatch modal + creature level toast + filters
 const STORAGE_KEY = "hc-state";
 
-const initialState = {
-  candies: { fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 },
-
-  // Multi-slot creature storage (unlimited)
-  stable: [
-    {
-      egg: { progress: 0, cost: 3, element: null, tally: blankTally() },
-      creature: { speciesId: null, nickname: null, happiness: null, xpTotal: 0, xpByElement: blankXPByEl() }
-    }
-  ],
-
-  // Active Team of indices into `stable` (max 6 shown on home carousel)
-  activeTeam: [0],
-  activeIndex: 0, // index within activeTeam (0..activeTeam.length-1)
-
-  tasks: [], // see newTask()
-
-  meta: {
-    lastSeenISO: null,
-    saveVersion: SAVE_VERSION,
-    lastActionLocalDate: null,
-    lastGemAwardDayKey: null,
-    streak: 0,
-    xpTotal: 0,
-    xpByElement: { fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 },
-    devOffsetDays: 0,
-    weekStartDay: 0, // user preference: 0=Sun .. 6=Sat
-    level: 1,
-    gems: 0,
-    // Pokedex registry
-    pokedex: {} // { [speciesId]: { seen:boolean, owned:boolean, firstSeenISO:string } }
-  }
-};
-
 // New flexible recurrence fields (kept optional for migration safety):
 // frequency: 'once'|'daily'|'weekly'|'days'|'monthly'|'monthly_last_day'|'everyXDays'|'everyXWeeks'|'everyXMonths'|'yearly'
 // fields: weeklyDay, daysOfWeek[], monthlyDay(1..31), everyX(number), yearlyMonth(0..11), yearlyDay(1..31)
 // anchorDayKey (creation day), snoozeUntilKey (skip mechanic)
-function newTask({
-  title, element, difficulty, frequency,
-  weeklyDay, daysOfWeek,
-  monthlyDay, everyX,
-  yearlyMonth, yearlyDay,
-  anchorDayKey
-}) {
-  const id = `task_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
-  return {
-    id,
-    title: (title || "").trim(),
-    element,
-    difficulty,
-    frequency,
-    weeklyDay: (typeof weeklyDay === "number" ? weeklyDay : null),
-    daysOfWeek: Array.isArray(daysOfWeek) ? daysOfWeek : [],
-    monthlyDay: (typeof monthlyDay === "number" ? monthlyDay : null),
-    everyX: (typeof everyX === "number" && everyX > 0) ? everyX : null,
-    yearlyMonth: (typeof yearlyMonth === "number" ? yearlyMonth : null),
-    yearlyDay: (typeof yearlyDay === "number" ? yearlyDay : null),
-    createdAtISO: nowISO(),
-    anchorDayKey: anchorDayKey || localDateStr(new Date()),
-    doneOnce: false,
-    lastCompletedDayKey: null,
-    lastCompletedWeekKey: null,
-    lastCompletedMonthKey: null,
-    lastCompletedYear: null,
-    snoozeUntilKey: null
-  };
-}
 
 function migrateTask(t) {
   return {
@@ -221,168 +52,9 @@ function migrateTask(t) {
   };
 }
 
-function withDefaults(s) {
-  const base = structuredClone(initialState);
-  const next = {
-    ...base,
-    ...(s || {}),
-    meta: {
-      ...base.meta,
-      ...(s?.meta || {}),
-      saveVersion: SAVE_VERSION,
-      xpByElement: { ...base.meta.xpByElement, ...(s?.meta?.xpByElement || {}) },
-      devOffsetDays: s?.meta?.devOffsetDays || 0,
-      weekStartDay: (s?.meta?.weekStartDay ?? 0),
-      level: s?.meta?.level ?? base.meta.level,
-      gems: s?.meta?.gems ?? 0,
-      lastGemAwardDayKey: s?.meta?.lastGemAwardDayKey ?? null,
-      pokedex: s?.meta?.pokedex || {}
-    }
-  };
-
-  // MIGRATION: stable / creature fields
-  if (!Array.isArray(s?.stable)) {
-    const oldEgg = s?.egg;
-    const oldCreature = s?.creature;
-    next.stable = [
-      {
-        egg: oldEgg ? { ...base.stable[0].egg, ...oldEgg, cost: 3 } : base.stable[0].egg,
-        creature: oldCreature
-          ? { ...base.stable[0].creature, ...oldCreature, xpTotal: oldCreature.xpTotal || 0, xpByElement: oldCreature.xpByElement || blankXPByEl() }
-          : base.stable[0].creature
-      }
-    ];
-  } else {
-    next.stable = s.stable.map(slot => ({
-      egg: { ...base.stable[0].egg, ...slot.egg, cost: 3 },
-      creature: {
-        ...base.stable[0].creature,
-        ...slot.creature,
-        xpTotal: slot?.creature?.xpTotal || 0,
-        xpByElement: slot?.creature?.xpByElement || blankXPByEl()
-      }
-    }));
-  }
-
-  // Active Team migration
-  if (!Array.isArray(s?.activeTeam) || s.activeTeam.length === 0) {
-    next.activeTeam = [0];
-  } else {
-    next.activeTeam = s.activeTeam.filter(i => typeof i === "number" && i >= 0 && i < next.stable.length);
-    if (next.activeTeam.length === 0) next.activeTeam = [0];
-  }
-  next.activeIndex = (typeof s?.activeIndex === "number")
-    ? Math.max(0, Math.min(next.activeTeam.length - 1, s.activeIndex))
-    : 0;
-
-  // Tasks
-  next.tasks = Array.isArray(s?.tasks) ? s.tasks.map(migrateTask) : [];
-
-  return next;
-}
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return withDefaults(parsed);
-  } catch {
-    return null;
-  }
-}
-function saveState(s) { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }
-
-/* ===================== Time (with Dev Offset) ===================== */
-
-function nowWithOffset(offsetDays=0) {
-  const d = new Date();
-  if (offsetDays) { const copy = new Date(d); copy.setDate(copy.getDate()+offsetDays); return copy; }
-  return d;
-}
-function todayKeyWithOffset(offsetDays=0) {
-  return localDateStr(nowWithOffset(offsetDays));
-}
-function weekKeyWithOffset(offsetDays=0, weekStart=0) {
-  return weekKeyBy(nowWithOffset(offsetDays), weekStart);
-}
-
 /* ===================== Recurrence Engine ===================== */
 
 function monthKey(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
-
-// Given a task and "today", decide if it's due today (respect snooze)
-function isDueTodayAdvanced(t, today, todayKey, wkKey, dayIndex, weekStart) {
-  if (t.snoozeUntilKey) {
-    // Snoozed tasks remain hidden UNTIL the snooze date; on/after the date, they are due normally
-    if (todayKey < t.snoozeUntilKey) return false;
-  }
-
-  if (t.frequency === "once")   return !t.doneOnce;
-  if (t.frequency === "daily")  return t.lastCompletedDayKey !== todayKey;
-  if (t.frequency === "weekly") {
-    const onRightDay = (t.weeklyDay == null) ? true : (dayIndex === t.weeklyDay);
-    return onRightDay && t.lastCompletedWeekKey !== wkKey;
-  }
-  if (t.frequency === "days")   return t.daysOfWeek?.includes(dayIndex) && t.lastCompletedDayKey !== todayKey;
-
-  // Monthly by specific day (1..31, clamp to month end)
-  if (t.frequency === "monthly") {
-    const want = t.monthlyDay ?? 1;
-    const max = lastDayOfMonth(today.getFullYear(), today.getMonth());
-    const day = Math.min(want, max);
-    if (today.getDate() !== day) return false;
-    const curMonthKey = monthKey(today);
-    return t.lastCompletedMonthKey !== curMonthKey;
-  }
-
-  // Monthly last day
-  if (t.frequency === "monthly_last_day") {
-    const isLast = today.getDate() === lastDayOfMonth(today.getFullYear(), today.getMonth());
-    if (!isLast) return false;
-    const curMonthKey = monthKey(today);
-    return t.lastCompletedMonthKey !== curMonthKey;
-  }
-
-  // Every X days/weeks/months — compute next from anchor or last completed
-  if (t.frequency === "everyXDays" && t.everyX) {
-    const anchor = t.lastCompletedDayKey ? new Date(t.lastCompletedDayKey) : new Date(t.anchorDayKey || todayKey);
-    const diff = Math.floor((today - new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate())) / (1000*60*60*24));
-    return diff % t.everyX === 0 && (t.lastCompletedDayKey !== todayKey);
-  }
-  if (t.frequency === "everyXWeeks" && t.everyX) {
-    const anchor = t.anchorDayKey ? new Date(t.anchorDayKey) : today;
-    const anchorStart = startOfWeek(anchor, weekStart);
-    const thisStart = startOfWeek(today, weekStart);
-    const weeksDiff = Math.round((thisStart - anchorStart) / (1000*60*60*24*7));
-    const onSameWeekday = today.getDay() === (new Date(t.anchorDayKey || todayKey)).getDay();
-    return (weeksDiff % t.everyX === 0) && onSameWeekday && (t.lastCompletedWeekKey !== weekKeyBy(today, weekStart));
-  }
-  if (t.frequency === "everyXMonths" && t.everyX) {
-    const anchor = t.anchorDayKey ? new Date(t.anchorDayKey) : today;
-    const monthsDiff = (today.getFullYear()-anchor.getFullYear())*12 + (today.getMonth()-anchor.getMonth());
-    const wantDay = Math.min(anchor.getDate(), lastDayOfMonth(today.getFullYear(), today.getMonth()));
-    const isDay = today.getDate() === wantDay;
-    const curMonthKey = monthKey(today);
-    return (monthsDiff % t.everyX === 0) && isDay && (t.lastCompletedMonthKey !== curMonthKey);
-  }
-
-  if (t.frequency === "yearly") {
-    const m = t.yearlyMonth ?? 0;
-    const d = t.yearlyDay ?? 1;
-    if (today.getMonth() !== m) return false;
-    const want = Math.min(d, lastDayOfMonth(today.getFullYear(), today.getMonth()));
-    if (today.getDate() !== want) return false;
-    const curYear = today.getFullYear();
-    return t.lastCompletedYear !== curYear;
-  }
-
-  return false;
-}
-
-function canCompleteNowAdvanced(t, today, todayKey, wkKey, dayIndex, weekStart) {
-  // Mirror logic of isDueToday, but confirm "not already completed for this period"
-  return isDueTodayAdvanced(t, today, todayKey, wkKey, dayIndex, weekStart);
-}
 
 /* ===================== App ===================== */
 
@@ -649,7 +321,7 @@ export default function App() {
         const first = nextQ[0];
         setCreatureLevelToast(first);
         return nextQ.slice(1);
-      }
+        }
       return nextQ;
     });
   }
@@ -1500,7 +1172,7 @@ export default function App() {
           </div>
           <div className="small" style={{ marginTop:4 }}>Create tasks, then complete them to earn candies, XP, and daily 💎.</div>
 
-          {/* Add task form (compact) */}
+  {/* Add task form (compact) */}
           <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
             <input
               className="input"
@@ -1616,7 +1288,7 @@ export default function App() {
             <button className="btn" onClick={addTask}>Add Task</button>
           </div>
 
-          {/* Suggestions (collapsed by default) */}
+          {/* Suggestions (collapsed by default; toggleable) */}
           <div className="card" style={{ marginTop:12 }}>
             <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
               <div className="small" style={{ fontWeight:700 }}>
@@ -1685,9 +1357,12 @@ export default function App() {
                         border:"1px solid rgba(255,255,255,0.12)",
                         borderRadius:8,
                         opacity:0.9,
-                        cursor: "pointer"
+                        cursor: "pointer",
+                        gap: 8,
+                        flexWrap: "wrap"
                       }}>
-                      <div className="small" style={{ fontWeight:700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                      {/* WRAP long task titles on mobile */}
+                      <div className="small" style={{ fontWeight:700, whiteSpace:"normal", wordBreak:"break-word", maxWidth:"100%" }}>
                         {t.title}
                       </div>
                       <div className="row" style={{ gap:6, flexWrap:"wrap" }}>
@@ -2078,7 +1753,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Manage Team Modal — paged icons (30/page) with scroll fallback */}
+      {/* Manage Team Modal — responsive grid icons (30/page) with scroll fallback */}
       {showManageTeam && (
         <div style={{
           position:"fixed", inset:0, background:"rgba(0,0,0,0.5)",
@@ -2102,12 +1777,14 @@ export default function App() {
               })} disabled={teamPage >= Math.ceil(state.stable.length / TEAM_PAGE_SIZE)-1}>›</button>
             </div>
 
-            <div style={{ maxHeight: "50vh", overflow: "auto", paddingRight:4 }}>
+            {/* Scroll container prevents "Done" from being pushed off-screen on phones */}
+            <div style={{ maxHeight: "60vh", overflow: "auto", paddingRight:4 }}>
               <div
                 style={{
                   display:"grid",
-                  gridTemplateColumns:"repeat(6, 1fr)",
-                  gap:8,
+                  // Responsive: shrink tiles automatically; no horizontal scroll
+                  gridTemplateColumns:"repeat(auto-fill, minmax(72px, 1fr))",
+                  gap:8
                 }}
               >
                 {state.stable.slice(teamPage*TEAM_PAGE_SIZE, (teamPage+1)*TEAM_PAGE_SIZE).map((slot, i) => {
@@ -2123,7 +1800,7 @@ export default function App() {
                       onClick={() => toggleTeamMember(idx)}
                       title={chosen ? "Remove from team" : "Add to team"}
                       style={{
-                        width:80, height:80,
+                        width:"100%", height:72,
                         padding:6,
                         borderRadius:10,
                         border: chosen ? "2px solid #8ad" : "1px solid rgba(255,255,255,0.12)",
@@ -2132,7 +1809,7 @@ export default function App() {
                         position:"relative"
                       }}
                     >
-                      <img src={art} width="48" height="48" style={{ imageRendering:"pixelated" }} alt={sp?.name || "Egg"} />
+                      <img src={art} width="40" height="40" style={{ imageRendering:"pixelated" }} alt={sp?.name || "Egg"} />
                       {chosen && (
                         <div
                           className="small"
@@ -2276,7 +1953,7 @@ export default function App() {
                       onChange={()=>{
                         setEditDraft(ed=>{
                           const on = ed.daysOfWeek?.includes(i);
-                                                    return {
+                          return {
                             ...ed,
                             daysOfWeek: on
                               ? ed.daysOfWeek.filter(x => x !== i)
@@ -2414,7 +2091,8 @@ export default function App() {
         }}
       >
         <div style={{ minWidth: 200, flex: 1 }}>
-          <div className="small" style={{ fontWeight:700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+          {/* WRAP long task titles instead of overflowing */}
+          <div className="small" style={{ fontWeight:700, whiteSpace:"normal", wordBreak:"break-word", maxWidth:"100%" }}>
             {t.title}
           </div>
           <div className="row" style={{ gap:6, marginTop:4, flexWrap:"wrap" }}>
