@@ -8,6 +8,20 @@ export function localDateStr(d = new Date()) {
   return `${y}-${m}-${day}`;
 }
 
+/* ========= Parsing (LOCAL, not UTC) ========= */
+/** Parse "YYYY-MM-DD" into a local Date (no timezone shift). */
+export function dateFromKey(key) {
+  if (!key || typeof key !== "string") return new Date();
+  const parts = key.split("-");
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  const d = Number(parts[2]);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) {
+    return new Date();
+  }
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+
 /* ========= Basic arithmetic ========= */
 export const addDays = (d, n) => {
   const x = new Date(d);
@@ -20,7 +34,6 @@ export const addWeeks = (d, n) => addDays(d, 7 * n);
 export const lastDayOfMonth = (y, m) => new Date(y, m + 1, 0).getDate();
 
 export function addMonthsClamped(d, n, dayPreference = null) {
-  const y = d.getFullYear();
   const m = d.getMonth();
   const target = new Date(d);
   target.setMonth(m + n);
@@ -37,8 +50,8 @@ export function startOfDay(d = new Date()) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
+/** Whole-day difference (a - b) using local midnights. */
 export function dayDiff(a, b) {
-  // Number of whole days (a - b), normalized to midnight
   const a0 = startOfDay(a);
   const b0 = startOfDay(b);
   return Math.floor((a0 - b0) / MS_PER_DAY);
@@ -59,6 +72,19 @@ export const weekKeyBy = (d, weekStart = 0) => {
     s.getDate()
   ).padStart(2, "0")}`;
 };
+
+/** Whole-week difference between week starts (a - b). */
+export function weekDiffBy(a, b, weekStart = 0) {
+  const sa = startOfWeek(a, weekStart);
+  const sb = startOfWeek(b, weekStart);
+  return Math.floor((sa - sb) / (7 * MS_PER_DAY));
+}
+
+/* ========= Month helpers ========= */
+/** Month difference (a - b) in whole months. */
+export function monthDiff(a, b) {
+  return (a.getFullYear() - b.getFullYear()) * 12 + (a.getMonth() - b.getMonth());
+}
 
 /* ========= Offset helpers ========= */
 export const nowWithOffset = (offsetDays = 0) => {
