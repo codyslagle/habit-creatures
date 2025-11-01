@@ -5,6 +5,8 @@ import suggestions from "./data/taskSuggestions.json";
 
 /* ===================== Helpers & Constants ===================== */
 
+const SPRITE_BOX_PX = 64;
+
 const blankTally = () => ({ fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 });
 const blankXPByEl = () => ({ fire:0, water:0, earth:0, air:0, light:0, metal:0, heart:0 });
 
@@ -26,7 +28,7 @@ const formatCost = (cost) => {
 // Element labels for dropdown
 const ELEMENT_LABEL = {
   fire: "Fire (Fitness)",
-  water: "Water (Self-Care)",
+  water: "Water (Self-C Care)",
   earth: "Earth (Chores)",
   air: "Air (Learning)",
   light: "Light (Creativity)",
@@ -68,6 +70,28 @@ function levelInfoFromTotalXP(totalXP) {
 }
 const nextLevelAt = (level) => xpToLevel(level); // cost to go from level -> level+1
 
+// Creature curve multiplier by stage (0 base, 1 stage1, 2 stage2)
+const CREATURE_STAGE_MULT = { 0: 1.0, 1: 1.15, 2: 1.30 };
+function creatureLevelInfo(totalXP, stage=0) {
+  // scale the requirement up by stage multiplier
+  let level = 1;
+  let spent = 0;
+  const mult = CREATURE_STAGE_MULT[String(stage)] ?? 1.0;
+  const needAt = (lv) => Math.round(xpToLevel(lv) * mult);
+  let need = needAt(level);
+  while (totalXP >= spent + need) {
+    spent += need;
+    level += 1;
+    need = needAt(level);
+  }
+  return {
+    level,
+    currentIntoLevel: totalXP - spent,
+    neededForLevel: need,
+    xpToNext: need - (totalXP - spent)
+  };
+}
+
 // Date helpers
 function localDateStr(d = new Date()) {
   const y = d.getFullYear();
@@ -75,6 +99,20 @@ function localDateStr(d = new Date()) {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
+function addWeeks(d, n) { return addDays(d, 7*n); }
+function lastDayOfMonth(y, m /*0..11*/) { return new Date(y, m+1, 0).getDate(); }
+function addMonthsClamped(d, n, dayPreference=null) {
+  const y = d.getFullYear();
+  const m = d.getMonth();
+  const target = new Date(d);
+  target.setMonth(m + n);
+  const wantDay = dayPreference ?? d.getDate();
+  const maxDay = lastDayOfMonth(target.getFullYear(), target.getMonth());
+  target.setDate(Math.min(wantDay, maxDay));
+  return target;
+}
+function sameDayKey(a, b) { return localDateStr(a) === localDateStr(b); }
 
 // Week math with custom start (0=Sun..6=Sat)
 function startOfWeek(d, weekStart=0) {
@@ -95,7 +133,7 @@ const DAY_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
 /* ===================== Save & Migration ===================== */
 
-const SAVE_VERSION = 6;
+const SAVE_VERSION = 8; // bumped for snooze logic + hatch modal + creature level toast + filters
 const STORAGE_KEY = "hc-state";
 
 const initialState = {
@@ -127,10 +165,61 @@ const initialState = {
     weekStartDay: 0, // user preference: 0=Sun .. 6=Sat
     level: 1,
     gems: 0,
-    // New: pokedex registry
+    // Pokedex registry
     pokedex: {} // { [speciesId]: { seen:boolean, owned:boolean, firstSeenISO:string } }
   }
 };
+
+// New flexible recurrence fields (kept optional for migration safety):
+// frequency: 'once'|'daily'|'weekly'|'days'|'monthly'|'monthly_last_day'|'everyXDays'|'everyXWeeks'|'everyXMonths'|'yearly'
+// fields: weeklyDay, daysOfWeek[], monthlyDay(1..31), everyX(number), yearlyMonth(0..11), yearlyDay(1..31)
+// anchorDayKey (creation day), snoozeUntilKey (skip mechanic)
+function newTask({
+  title, element, difficulty, frequency,
+  weeklyDay, daysOfWeek,
+  monthlyDay, everyX,
+  yearlyMonth, yearlyDay,
+  anchorDayKey
+}) {
+  const id = `task_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+  return {
+    id,
+    title: (title || "").trim(),
+    element,
+    difficulty,
+    frequency,
+    weeklyDay: (typeof weeklyDay === "number" ? weeklyDay : null),
+    daysOfWeek: Array.isArray(daysOfWeek) ? daysOfWeek : [],
+    monthlyDay: (typeof monthlyDay === "number" ? monthlyDay : null),
+    everyX: (typeof everyX === "number" && everyX > 0) ? everyX : null,
+    yearlyMonth: (typeof yearlyMonth === "number" ? yearlyMonth : null),
+    yearlyDay: (typeof yearlyDay === "number" ? yearlyDay : null),
+    createdAtISO: nowISO(),
+    anchorDayKey: anchorDayKey || localDateStr(new Date()),
+    doneOnce: false,
+    lastCompletedDayKey: null,
+    lastCompletedWeekKey: null,
+    lastCompletedMonthKey: null,
+    lastCompletedYear: null,
+    snoozeUntilKey: null
+  };
+}
+
+function migrateTask(t) {
+  return {
+    weeklyDay: (typeof t.weeklyDay === "number" ? t.weeklyDay : null),
+    daysOfWeek: Array.isArray(t.daysOfWeek) ? t.daysOfWeek : [],
+    monthlyDay: (typeof t.monthlyDay === "number" ? t.monthlyDay : null),
+    everyX: (typeof t.everyX === "number" && t.everyX > 0) ? t.everyX : null,
+    yearlyMonth: (typeof t.yearlyMonth === "number" ? t.yearlyMonth : null),
+    yearlyDay: (typeof t.yearlyDay === "number" ? t.yearlyDay : null),
+    anchorDayKey: t.anchorDayKey || (t.createdAtISO ? localDateStr(new Date(t.createdAtISO)) : localDateStr(new Date())),
+    lastCompletedMonthKey: t.lastCompletedMonthKey || null,
+    lastCompletedYear: t.lastCompletedYear || null,
+    snoozeUntilKey: t.snoozeUntilKey || null,
+    ...t
+  };
+}
 
 function withDefaults(s) {
   const base = structuredClone(initialState);
@@ -165,7 +254,7 @@ function withDefaults(s) {
     ];
   } else {
     next.stable = s.stable.map(slot => ({
-      egg: { ...base.stable[0].egg, ...slot.egg, cost: 3 }, // enforce hatch cost=3
+      egg: { ...base.stable[0].egg, ...slot.egg, cost: 3 },
       creature: {
         ...base.stable[0].creature,
         ...slot.creature,
@@ -179,7 +268,6 @@ function withDefaults(s) {
   if (!Array.isArray(s?.activeTeam) || s.activeTeam.length === 0) {
     next.activeTeam = [0];
   } else {
-    // clamp indices to stable length
     next.activeTeam = s.activeTeam.filter(i => typeof i === "number" && i >= 0 && i < next.stable.length);
     if (next.activeTeam.length === 0) next.activeTeam = [0];
   }
@@ -218,76 +306,89 @@ function weekKeyWithOffset(offsetDays=0, weekStart=0) {
   return weekKeyBy(nowWithOffset(offsetDays), weekStart);
 }
 
-/* ===================== Hatching ===================== */
+/* ===================== Recurrence Engine ===================== */
 
-function pickDominantElement(availableCandies, validElements) {
-  const counts = validElements.map(e => ({ e, n: (availableCandies?.[e] || 0) }));
-  counts.sort((a,b)=>b.n-a.n);
-  const top = counts[0];
-  if (!top || top.n === 0) return null;
-  const ties = counts.filter(c => c.n === top.n).map(c=>c.e);
-  return ties[Math.floor(Math.random()*ties.length)];
-}
+function monthKey(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
 
-/* ===================== Tasks ===================== */
+// Given a task and "today", decide if it's due today (respect snooze)
+function isDueTodayAdvanced(t, today, todayKey, wkKey, dayIndex, weekStart) {
+  if (t.snoozeUntilKey) {
+    // Snoozed tasks remain hidden UNTIL the snooze date; on/after the date, they are due normally
+    if (todayKey < t.snoozeUntilKey) return false;
+  }
 
-// frequency: 'once' | 'daily' | 'weekly' | 'days' (specific days)
-function newTask({ title, element, difficulty, frequency, weeklyDay, daysOfWeek }) {
-  const id = `task_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
-  return {
-    id,
-    title: (title || "").trim(),
-    element,
-    difficulty,
-    frequency,
-    weeklyDay: (typeof weeklyDay === "number" ? weeklyDay : null),
-    daysOfWeek: Array.isArray(daysOfWeek) ? daysOfWeek : [],
-    createdAtISO: nowISO(),
-    doneOnce: false,
-    lastCompletedDayKey: null,
-    lastCompletedWeekKey: null
-  };
-}
-function migrateTask(t) {
-  return {
-    weeklyDay: (typeof t.weeklyDay === "number" ? t.weeklyDay : null),
-    daysOfWeek: Array.isArray(t.daysOfWeek) ? t.daysOfWeek : [],
-    ...t
-  };
-}
-
-// Allowed to complete now?
-function canCompleteTaskNow(t, todayKey, wkKey, dayIndex) {
   if (t.frequency === "once")   return !t.doneOnce;
   if (t.frequency === "daily")  return t.lastCompletedDayKey !== todayKey;
   if (t.frequency === "weekly") {
     const onRightDay = (t.weeklyDay == null) ? true : (dayIndex === t.weeklyDay);
     return onRightDay && t.lastCompletedWeekKey !== wkKey;
   }
-  if (t.frequency === "days") {
-    const scheduled = t.daysOfWeek?.includes(dayIndex);
-    return scheduled && t.lastCompletedDayKey !== todayKey;
+  if (t.frequency === "days")   return t.daysOfWeek?.includes(dayIndex) && t.lastCompletedDayKey !== todayKey;
+
+  // Monthly by specific day (1..31, clamp to month end)
+  if (t.frequency === "monthly") {
+    const want = t.monthlyDay ?? 1;
+    const max = lastDayOfMonth(today.getFullYear(), today.getMonth());
+    const day = Math.min(want, max);
+    if (today.getDate() !== day) return false;
+    const curMonthKey = monthKey(today);
+    return t.lastCompletedMonthKey !== curMonthKey;
   }
-  return true;
+
+  // Monthly last day
+  if (t.frequency === "monthly_last_day") {
+    const isLast = today.getDate() === lastDayOfMonth(today.getFullYear(), today.getMonth());
+    if (!isLast) return false;
+    const curMonthKey = monthKey(today);
+    return t.lastCompletedMonthKey !== curMonthKey;
+  }
+
+  // Every X days/weeks/months — compute next from anchor or last completed
+  if (t.frequency === "everyXDays" && t.everyX) {
+    const anchor = t.lastCompletedDayKey ? new Date(t.lastCompletedDayKey) : new Date(t.anchorDayKey || todayKey);
+    const diff = Math.floor((today - new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate())) / (1000*60*60*24));
+    return diff % t.everyX === 0 && (t.lastCompletedDayKey !== todayKey);
+  }
+  if (t.frequency === "everyXWeeks" && t.everyX) {
+    const anchor = t.anchorDayKey ? new Date(t.anchorDayKey) : today;
+    const anchorStart = startOfWeek(anchor, weekStart);
+    const thisStart = startOfWeek(today, weekStart);
+    const weeksDiff = Math.round((thisStart - anchorStart) / (1000*60*60*24*7));
+    const onSameWeekday = today.getDay() === (new Date(t.anchorDayKey || todayKey)).getDay();
+    return (weeksDiff % t.everyX === 0) && onSameWeekday && (t.lastCompletedWeekKey !== weekKeyBy(today, weekStart));
+  }
+  if (t.frequency === "everyXMonths" && t.everyX) {
+    const anchor = t.anchorDayKey ? new Date(t.anchorDayKey) : today;
+    const monthsDiff = (today.getFullYear()-anchor.getFullYear())*12 + (today.getMonth()-anchor.getMonth());
+    const wantDay = Math.min(anchor.getDate(), lastDayOfMonth(today.getFullYear(), today.getMonth()));
+    const isDay = today.getDate() === wantDay;
+    const curMonthKey = monthKey(today);
+    return (monthsDiff % t.everyX === 0) && isDay && (t.lastCompletedMonthKey !== curMonthKey);
+  }
+
+  if (t.frequency === "yearly") {
+    const m = t.yearlyMonth ?? 0;
+    const d = t.yearlyDay ?? 1;
+    if (today.getMonth() !== m) return false;
+    const want = Math.min(d, lastDayOfMonth(today.getFullYear(), today.getMonth()));
+    if (today.getDate() !== want) return false;
+    const curYear = today.getFullYear();
+    return t.lastCompletedYear !== curYear;
+  }
+
+  return false;
 }
 
-// Should appear in Today?
-function isDueToday(t, todayKey, wkKey, dayIndex) {
-  if (t.frequency === "once")   return !t.doneOnce;
-  if (t.frequency === "daily")  return true; // filtered later by !canCompleteTaskNow -> hides after completion
-  if (t.frequency === "weekly") {
-    const onRightDay = (t.weeklyDay == null) ? true : (dayIndex === t.weeklyDay);
-    return onRightDay && t.lastCompletedWeekKey !== wkKey;
-  }
-  if (t.frequency === "days")   return t.daysOfWeek?.includes(dayIndex);
-  return false;
+function canCompleteNowAdvanced(t, today, todayKey, wkKey, dayIndex, weekStart) {
+  // Mirror logic of isDueToday, but confirm "not already completed for this period"
+  return isDueTodayAdvanced(t, today, todayKey, wkKey, dayIndex, weekStart);
 }
 
 /* ===================== App ===================== */
 
 export default function App() {
   const [state, setState] = useState(() => loadState() || initialState);
-  const [dex, setDex] = useState({ DEX: {}, getSpecies: () => null, findBaseByElement: () => null, ready: false });
+  const [dex, setDex] = useState({ DEX: {}, getSpecies: () => null, findBaseByElement: () => null, ready: false, order: [] });
 
   // Tabs
   const [tab, setTab] = useState("creatures"); // 'creatures' | 'tasks' | 'library'
@@ -310,27 +411,52 @@ export default function App() {
   const [taskFrequency, setTaskFrequency] = useState("daily");
   const [taskWeeklyDay, setTaskWeeklyDay] = useState(null);  // for 'weekly'
   const [taskDays, setTaskDays] = useState([]);              // for 'days'
-  const [showSuggestions, setShowSuggestions] = useState(false); // ✅ NEW: collapsed by default
+  const [taskMonthlyDay, setTaskMonthlyDay] = useState(1);   // for 'monthly'
+  const [taskEveryX, setTaskEveryX] = useState(2);           // for everyX*
+  const [taskYearlyMonth, setTaskYearlyMonth] = useState(0); // 0..11
+  const [taskYearlyDay, setTaskYearlyDay] = useState(1);     // 1..31
+  const [taskAnchorDayKey, setTaskAnchorDayKey] = useState(localDateStr(new Date())); // NEW
+  const [showSuggestions, setShowSuggestions] = useState(false);
 
-  // Task list controls
+  // Task list controls + search
   const [filterElement, setFilterElement] = useState("all");
-  const [filterOccur, setFilterOccur] = useState("all"); // 'all'|'once'|'daily'|'weekly'|'days'
+  const [filterOccur, setFilterOccur] = useState("all");
   const [sortMode, setSortMode] = useState("element"); // 'element' | 'title'
+  const [taskSearch, setTaskSearch] = useState(localStorage.getItem("hc-task-search") || "");
+  const [searchDebounce, setSearchDebounce] = useState(taskSearch);
+
+  useEffect(() => {
+    const id = setTimeout(() => setTaskSearch(searchDebounce), 250);
+    return () => clearTimeout(id);
+  }, [searchDebounce]);
+  useEffect(() => { localStorage.setItem("hc-task-search", taskSearch); }, [taskSearch]);
 
   // Inline edit
   const [editingTaskId, setEditingTaskId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
 
-  // Level-up toast
+  // Skip modal
+  const [skipTarget, setSkipTarget] = useState(null); // { taskId, choices:[{label, keyToSet}] }
+
+  // Trainer Level-up toast
   const [levelToast, setLevelToast] = useState(null); // { level, xpToNext }
+
+  // Creature Level-up (queue)
+  const [creatureLevelToast, setCreatureLevelToast] = useState(null); // current toast
+  const [creatureToastQueue, setCreatureToastQueue] = useState([]);   // pending toasts
 
   // Status bar UI
   const [showXPTooltip, setShowXPTooltip] = useState(false);
   const [showShop, setShowShop] = useState(false);
-  const [showManageTeam, setShowManageTeam] = useState(false);
 
-  // ✅ Evolution Congrats modal state
+  // Manage Team modal (paged 30/page)
+  const [showManageTeam, setShowManageTeam] = useState(false);
+  const [teamPage, setTeamPage] = useState(0);
+  const TEAM_PAGE_SIZE = 30;
+
+  // Evolution & Hatch Congrats modal state
   const [showEvoCongrats, setShowEvoCongrats] = useState(null); // { from, to }
+  const [showHatchCongrats, setShowHatchCongrats] = useState(null); // { to }
 
   /* ----- DEX load ----- */
   useEffect(() => {
@@ -338,7 +464,7 @@ export default function App() {
     (async () => {
       try {
         const loaded = await loadDexFromCSV();
-        if (active) setDex({ ...loaded, ready: true });
+        if (active) setDex({ ...loaded, ready: true, order: loaded.order || [] });
       } catch (err) {
         console.error("Failed to load dex:", err);
       }
@@ -363,15 +489,15 @@ export default function App() {
 
   /* ----- Active Team mapping ----- */
   const team = state.activeTeam.length ? state.activeTeam : [0];
-  const activeStableIndex = team[state.activeIndex] ?? team[0];
+  const activeStableIndex = team[state.activeIndex] ?? team[0] ?? 0;
   const active = state.stable[activeStableIndex] ?? state.stable[0];
   const activeEgg = active.egg;
   const activeCreature = active.creature;
-  const creature = activeCreature?.speciesId ? dex.getSpecies(activeCreature.speciesId) : null;
+  const activeSpecies = activeCreature?.speciesId ? dex.getSpecies(activeCreature.speciesId) : null;
 
   const sprite = useMemo(
-    () => (creature ? (creature.sprite || `/sprites/${creature.id}.png`) : "/egg.png"),
-    [creature]
+    () => (activeSpecies ? (activeSpecies.sprite || `/sprites/${activeSpecies.id}.png`) : "/egg.png"),
+    [activeSpecies]
   );
 
   /* ===================== Slot helpers ===================== */
@@ -379,8 +505,10 @@ export default function App() {
   function setActiveSlot(updater) {
     setState((s) => {
       const next = structuredClone(s);
-      const stableIndex = (next.activeTeam[next.activeIndex] ?? 0);
+      const ai = Math.max(0, Math.min(next.activeTeam.length - 1, next.activeIndex || 0));
+      const stableIndex = (next.activeTeam[ai] ?? 0);
       const slot = next.stable[stableIndex];
+      if (!slot) return s;
       updater(slot, stableIndex, next);
       return next;
     });
@@ -407,7 +535,6 @@ export default function App() {
         creature: { speciesId: null, nickname: null, happiness: null, xpTotal: 0, xpByElement: blankXPByEl() }
       });
       const newIndex = next.stable.length - 1;
-      // If team has space (<6), auto-add dev egg to team and focus it
       if (next.activeTeam.length < 6) {
         next.activeTeam.push(newIndex);
         next.activeIndex = next.activeTeam.length - 1;
@@ -434,17 +561,16 @@ export default function App() {
     });
   }
 
-  function openManageTeam() { setShowManageTeam(true); }
+  function openManageTeam() { setTeamPage(0); setShowManageTeam(true); }
   function toggleTeamMember(stableIndex) {
     setState((s)=>{
       const next = structuredClone(s);
       const pos = next.activeTeam.indexOf(stableIndex);
       if (pos >= 0) {
-        // remove
         next.activeTeam.splice(pos, 1);
         if (next.activeIndex >= next.activeTeam.length) next.activeIndex = Math.max(0, next.activeTeam.length - 1);
       } else {
-        if (next.activeTeam.length >= 6) return s; // max 6
+        if (next.activeTeam.length >= 6) return s;
         next.activeTeam.push(stableIndex);
         next.activeIndex = next.activeTeam.length - 1;
       }
@@ -470,7 +596,6 @@ export default function App() {
       entry.firstSeenISO = entry.firstSeenISO || nowISO();
     }
   }
-  // ✅ Mark the species AND its ancestors as owned (you had to own them to get here)
   function markOwnedLineage(next, speciesId) {
     if (!speciesId) return;
     let cur = dex.getSpecies(speciesId);
@@ -487,7 +612,6 @@ export default function App() {
   /* ===================== Core Actions ===================== */
 
   function maybeBumpStreakAndGems(next) {
-    // Streak bump + 1 random candy on first action of a calendar day
     if (next.meta.lastActionLocalDate !== todayKey) {
       next.meta.streak = (next.meta.streak || 0) + 1;
       const pick = ELEMENTS[Math.floor(Math.random() * ELEMENTS.length)];
@@ -495,14 +619,12 @@ export default function App() {
       next.meta.lastActionLocalDate = todayKey;
     }
   }
-
   function maybeAwardDailyGems(next) {
     if (next.meta.lastGemAwardDayKey !== todayKey) {
       next.meta.gems = (next.meta.gems || 0) + 20;
       next.meta.lastGemAwardDayKey = todayKey;
     }
   }
-
   function awardXP(next, xpGain) {
     const prevTotal = next.meta.xpTotal || 0;
     const prevInfo = levelInfoFromTotalXP(prevTotal);
@@ -512,31 +634,71 @@ export default function App() {
     const newInfo = levelInfoFromTotalXP(newTotal);
     if (newInfo.level > prevInfo.level) {
       next.meta.level = newInfo.level;
-      setTimeout(() => {
-        setLevelToast({ level: newInfo.level, xpToNext: newInfo.xpToNext });
-      }, 0);
+      setTimeout(() => { setLevelToast({ level: newInfo.level, xpToNext: newInfo.xpToNext }); }, 0);
     } else {
       next.meta.level = newInfo.level;
     }
   }
 
-  // Dev candy
-  function earnCandy(el) {
+  // Queue a creature level-up toast
+  function enqueueCreatureToast(payload) {
+    setCreatureToastQueue(q => {
+      const nextQ = [...q, payload];
+      if (!creatureLevelToast) {
+        // nothing showing; show immediately
+        const first = nextQ[0];
+        setCreatureLevelToast(first);
+        return nextQ.slice(1);
+      }
+      return nextQ;
+    });
+  }
+  function dismissCreatureToast() {
+    setCreatureLevelToast(null);
+    setCreatureToastQueue(q => {
+      if (q.length === 0) return q;
+      const [first, ...rest] = q;
+      setCreatureLevelToast(first);
+      return rest;
+    });
+  }
+
+  // Dev candy (+5 candies, +5 XP trainer, +5 XP each active creature)
+  function earnCandyDev(el) {
     setState((s) => {
       const next = structuredClone(s);
-      maybeBumpStreakAndGems(next); // gems can also award here if first action
-      next.candies[el] = (next.candies[el] || 0) + 1;
-      awardXP(next, 1);
-      next.meta.xpByElement[el] = (next.meta.xpByElement[el] || 0) + 1;
-      // Party XP (tiny dev action credit)
-      for (const idx of next.activeTeam) {
-        const slot = next.stable[idx];
-        if (slot?.creature?.speciesId) {
-          slot.creature.xpTotal += 1;
-          slot.creature.xpByElement[el] = (slot.creature.xpByElement[el] || 0) + 1;
-          markSeen(next, slot.creature.speciesId); // seen/current
+
+      maybeBumpStreakAndGems(next);
+
+      // +5 candies of chosen element
+      next.candies[el] = (next.candies[el] || 0) + 5;
+
+      // Trainer XP (+5) and element XP
+      const xpGain = 5;
+      awardXP(next, xpGain);
+      next.meta.xpByElement[el] = (next.meta.xpByElement[el] || 0) + xpGain;
+
+      // Each active creature gains +5 XP and per-element XP
+      for (const idx2 of next.activeTeam) {
+        const before = s.stable[idx2];
+        const after = next.stable[idx2];
+        if (after?.creature?.speciesId) {
+          after.creature.xpTotal += xpGain;
+          after.creature.xpByElement[el] = (after.creature.xpByElement[el] || 0) + xpGain;
+
+          const sp = dex.getSpecies(after.creature.speciesId);
+          if (sp) {
+            const prevLv = creatureLevelInfo(before.creature.xpTotal || 0, sp.stage || 0).level;
+            const nowLv  = creatureLevelInfo(after.creature.xpTotal || 0,  sp.stage || 0).level;
+            if (nowLv > prevLv) {
+              const name = after.creature.nickname || sp.name || "Your Growling";
+              const spr = sp.sprite || `/sprites/${sp.id}.png`;
+              setTimeout(() => enqueueCreatureToast({ name, toLevel: nowLv, sprite: spr }), 0);
+            }
+          }
         }
       }
+
       return next;
     });
   }
@@ -546,7 +708,8 @@ export default function App() {
     setState((s) => {
       const next = structuredClone(s);
       const slot = next.stable[next.activeTeam[next.activeIndex] ?? 0];
-      if (slot.creature.speciesId) return s;
+      if (!slot) return s;
+      if (slot.creature?.speciesId) return s;
       if (slot.egg.progress >= slot.egg.cost) return s;
       if ((next.candies[el]||0) <= 0) return s;
       next.candies[el]--;
@@ -556,25 +719,51 @@ export default function App() {
     });
   }
 
+  function pickDominantElement(tally, order) {
+    // choose highest tally; tie-break by ELEMENTS order
+    let bestEl = order[0], bestVal = -1;
+    for (const el of order) {
+      const v = tally[el] || 0;
+      if (v > bestVal) { bestVal = v; bestEl = el; }
+    }
+    return bestEl;
+  }
+
   function hatchIfReady() {
     setState((s) => {
       const next = structuredClone(s);
-      const slot = next.stable[next.activeTeam[next.activeIndex] ?? 0];
-      if (slot.creature.speciesId || slot.egg.progress < slot.egg.cost) return s;
+
+      if (!dex.ready) return s;
+      const ai = Math.max(0, Math.min(next.activeTeam.length - 1, next.activeIndex || 0));
+      const stableIdx = next.activeTeam[ai] ?? 0;
+      const slot = next.stable[stableIdx];
+      if (!slot) return s;
+
+      if (slot.creature?.speciesId) return s;
+      if (slot.egg.progress < slot.egg.cost) return s;
+
       const dominant = pickDominantElement(slot.egg.tally, ELEMENTS) || "fire";
-      const base = dex.findBaseByElement(dominant);
-      if (!base) return s;
+      const base = typeof dex.findBaseByElement === "function" ? dex.findBaseByElement(dominant) : null;
+      if (!base) {
+        // Safe guard: if no base found for element, do nothing instead of crashing
+        return s;
+      }
+
+      // Reset egg & set creature
       slot.egg = { progress: 0, cost: slot.egg.cost, element: dominant, tally: blankTally() };
       slot.creature = { speciesId: base.id, nickname: null, happiness: 60, xpTotal: 0, xpByElement: blankXPByEl() };
-      // Pokedex: owning base (and its lineage == itself)
       markOwnedLineage(next, base.id);
+
+      // Show hatch modal
+      setTimeout(() => setShowHatchCongrats({ to: dex.getSpecies(base.id) }), 0);
+
       return next;
     });
   }
 
   function tryEvolve() {
-    if (!creature) return;
-    const evos = creature.evolutions || [];
+    if (!activeSpecies) return;
+    const evos = activeSpecies.evolutions || [];
     if (!evos.length) return;
     const affordable = evos.filter((ev) => canAfford(state.candies, ev.cost));
     if (!affordable.length) return;
@@ -587,7 +776,7 @@ export default function App() {
     const cheapest = Math.min(...Object.keys(byCost).map(Number));
     const cheapestSet = byCost[cheapest];
 
-    // Mark these species as seen when presenting choices
+    // Mark as seen
     setState((s) => {
       const next = structuredClone(s);
       for (const ev of cheapestSet) markSeen(next, ev.to);
@@ -599,14 +788,13 @@ export default function App() {
   }
 
   function confirmEvolution(chosen) {
-    // ✅ Determine “from” and “to” BEFORE state mutation so the modal always has correct data
-    const fromSp = creature ? dex.getSpecies(creature.id) : null;
+    const fromSp = activeSpecies ? dex.getSpecies(activeSpecies.id) : null;
     const toSp = dex.getSpecies(chosen.to);
 
     setState((s) => {
       const next = structuredClone(s);
       const slot = next.stable[next.activeTeam[next.activeIndex] ?? 0];
-      if (!slot.creature.speciesId) return s;
+      if (!slot?.creature?.speciesId) return s;
 
       Object.entries(chosen.cost || {}).forEach(([el, amt]) => {
         next.candies[el] = Math.max(0, (next.candies[el] || 0) - amt);
@@ -615,19 +803,16 @@ export default function App() {
       if (slot.creature.happiness != null) {
         slot.creature.happiness = clamp((slot.creature.happiness || 0) + 5, 0, 100);
       }
-      // Pokedex: own the evolved species + all its ancestors
       markOwnedLineage(next, chosen.to);
       return next;
     });
 
-    // ✅ Trigger the Congrats modal with stable “from/to”
     setShowEvoCongrats({ from: fromSp, to: toSp });
-
     setShowEvoModal(false);
     setEvoChoices([]);
   }
 
-  /* ===================== Tasks: CRUD / Complete / Edit ===================== */
+  /* ===================== Tasks: CRUD / Complete / Edit / Skip ===================== */
 
   function addTask() {
     const title = taskTitle.trim();
@@ -640,13 +825,19 @@ export default function App() {
         difficulty: taskDifficulty,
         frequency: taskFrequency,
         weeklyDay: taskFrequency === "weekly" ? taskWeeklyDay : null,
-        daysOfWeek: taskFrequency === "days" ? [...taskDays] : []
+        daysOfWeek: taskFrequency === "days" ? [...taskDays] : [],
+        monthlyDay: taskFrequency === "monthly" ? clamp(taskMonthlyDay,1,31) : null,
+        everyX: (taskFrequency.startsWith("everyX") ? Math.max(1, Number(taskEveryX)||1) : null),
+        yearlyMonth: taskFrequency === "yearly" ? taskYearlyMonth : null,
+        yearlyDay: taskFrequency === "yearly" ? clamp(taskYearlyDay,1,31) : null,
+        anchorDayKey: (taskFrequency.startsWith("everyX") ? taskAnchorDayKey : localDateStr(new Date()))
       }));
       return next;
     });
     setTaskTitle("");
     setTaskDays([]);
     setTaskWeeklyDay(null);
+    setTaskAnchorDayKey(localDateStr(new Date()));
   }
 
   function deleteTask(id) {
@@ -657,41 +848,58 @@ export default function App() {
     });
   }
 
+  function creatureLevelCheckAndToast(next, slotBefore, slotAfter) {
+    if (!slotBefore?.creature?.speciesId || !slotAfter?.creature?.speciesId) return;
+    const sp = dex.getSpecies(slotAfter.creature.speciesId);
+    if (!sp) return;
+    const prev = creatureLevelInfo(slotBefore.creature.xpTotal || 0, sp.stage || 0).level;
+    const now = creatureLevelInfo(slotAfter.creature.xpTotal || 0, sp.stage || 0).level;
+    if (now > prev) {
+      const name = slotAfter.creature.nickname || sp.name || "Your Growling";
+      const spr = sp.sprite || `/sprites/${sp.id}.png`;
+      setTimeout(() => enqueueCreatureToast({ name, toLevel: now, sprite: spr }), 0);
+    }
+  }
+
   function completeTask(id) {
     setState((s) => {
       const idx = s.tasks.findIndex(t => t.id === id);
       if (idx === -1) return s;
       const task = s.tasks[idx];
-      if (!canCompleteTaskNow(task, todayKey, wkKey, todayDayIndex)) return s;
+      if (!canCompleteNowAdvanced(task, todayDate, todayKey, wkKey, todayDayIndex, state.meta.weekStartDay)) return s;
 
       const next = structuredClone(s);
       const t = next.tasks[idx];
 
-      // Streak & gems (first completion of day)
       maybeBumpStreakAndGems(next);
       maybeAwardDailyGems(next);
 
-      // Reward: 1 candy of task's element + XP
       next.candies[t.element] = (next.candies[t.element] || 0) + 1;
 
       const xpGain = XP_BY_DIFFICULTY[t.difficulty] || 0;
       awardXP(next, xpGain);
       next.meta.xpByElement[t.element] = (next.meta.xpByElement[t.element] || 0) + xpGain;
 
-      // Party XP: each active creature gains the same XP, bucketed by element
+      // Party XP and creature level-up toast checks
       for (const idx2 of next.activeTeam) {
-        const slot = next.stable[idx2];
-        if (slot?.creature?.speciesId) {
-          slot.creature.xpTotal += xpGain;
-          slot.creature.xpByElement[t.element] = (slot.creature.xpByElement[t.element] || 0) + xpGain;
-          // Mark current creatures seen (safety)
-          markSeen(next, slot.creature.speciesId);
+        const slotBefore = s.stable[idx2];
+        const slotAfter  = next.stable[idx2];
+        if (slotAfter?.creature?.speciesId) {
+          slotAfter.creature.xpTotal += xpGain;
+          slotAfter.creature.xpByElement[t.element] = (slotAfter.creature.xpByElement[t.element] || 0) + xpGain;
+          markSeen(next, slotAfter.creature.speciesId);
+          creatureLevelCheckAndToast(next, slotBefore, slotAfter);
         }
       }
 
+      // Mark complete for period + clear snooze
       if (t.frequency === "once") t.doneOnce = true;
-      else if (t.frequency === "weekly") t.lastCompletedWeekKey = wkKey;
-      else t.lastCompletedDayKey = todayKey; // daily or days
+      else if (t.frequency === "weekly" || t.frequency === "everyXWeeks") t.lastCompletedWeekKey = wkKey;
+      else if (t.frequency === "monthly" || t.frequency === "monthly_last_day" || t.frequency === "everyXMonths") t.lastCompletedMonthKey = monthKey(todayDate);
+      else if (t.frequency === "yearly") t.lastCompletedYear = todayDate.getFullYear();
+      else t.lastCompletedDayKey = todayKey; // daily, days, everyXDays
+
+      t.snoozeUntilKey = null;
 
       return next;
     });
@@ -706,7 +914,12 @@ export default function App() {
       difficulty: t.difficulty,
       frequency: t.frequency,
       weeklyDay: (typeof t.weeklyDay === "number" ? t.weeklyDay : null),
-      daysOfWeek: Array.isArray(t.daysOfWeek) ? [...t.daysOfWeek] : []
+      daysOfWeek: Array.isArray(t.daysOfWeek) ? [...t.daysOfWeek] : [],
+      monthlyDay: (typeof t.monthlyDay === "number" ? t.monthlyDay : 1),
+      everyX: (typeof t.everyX === "number" ? t.everyX : 2),
+      yearlyMonth: (typeof t.yearlyMonth === "number" ? t.yearlyMonth : 0),
+      yearlyDay: (typeof t.yearlyDay === "number" ? t.yearlyDay : 1),
+      anchorDayKey: t.anchorDayKey || localDateStr(new Date())
     });
   }
   function cancelEdit() { setEditingTaskId(null); setEditDraft(null); }
@@ -724,7 +937,12 @@ export default function App() {
           difficulty: editDraft.difficulty,
           frequency: editDraft.frequency,
           weeklyDay: editDraft.frequency === "weekly" ? editDraft.weeklyDay : null,
-          daysOfWeek: editDraft.frequency === "days" ? [...(editDraft.daysOfWeek||[])] : []
+          daysOfWeek: editDraft.frequency === "days" ? [...(editDraft.daysOfWeek||[])] : [],
+          monthlyDay: editDraft.frequency === "monthly" ? clamp(Number(editDraft.monthlyDay)||1,1,31) : null,
+          everyX: editDraft.frequency.startsWith("everyX") ? Math.max(1, Number(editDraft.everyX)||1) : null,
+          yearlyMonth: editDraft.frequency === "yearly" ? Number(editDraft.yearlyMonth)||0 : null,
+          yearlyDay: editDraft.frequency === "yearly" ? clamp(Number(editDraft.yearlyDay)||1,1,31) : null,
+          anchorDayKey: editDraft.frequency.startsWith("everyX") ? (editDraft.anchorDayKey || localDateStr(new Date())) : prev.anchorDayKey
         };
       }
       return next;
@@ -733,7 +951,34 @@ export default function App() {
     setEditDraft(null);
   }
 
-  /* ===================== Derived UI Lists ===================== */
+  // Skip UI — always: Tomorrow, Next Week, Next Month
+  function requestSkip(t) {
+    const tomorrow = localDateStr(addDays(todayDate, 1));
+    const nextWeek = localDateStr(addWeeks(todayDate, 1));
+    const nextMonth = localDateStr(addMonthsClamped(todayDate, 1));
+    setSkipTarget({
+      taskId: t.id,
+      choices: [
+        { label: `Tomorrow (${tomorrow})`, key: tomorrow },
+        { label: `Next Week (${nextWeek})`, key: nextWeek },
+        { label: `Next Month (${nextMonth})`, key: nextMonth },
+      ]
+    });
+  }
+  function performSkip(choiceKey) {
+    if (!skipTarget) return;
+    setState(s => {
+      const next = structuredClone(s);
+      const idx = next.tasks.findIndex(x => x.id === skipTarget.taskId);
+      if (idx !== -1) {
+        next.tasks[idx].snoozeUntilKey = choiceKey;
+      }
+      return next;
+    });
+    setSkipTarget(null);
+  }
+
+  /* ===================== Derived UI Lists (incl. search) ===================== */
 
   function bySort(a,b) {
     if (sortMode === "title") return a.title.localeCompare(b.title);
@@ -741,27 +986,55 @@ export default function App() {
     return a.title.localeCompare(b.title);
   }
 
+  const searchLC = (taskSearch || "").toLowerCase();
+
   const visibleTasksBase = state.tasks
     .filter(t => filterElement === "all" ? true : t.element === filterElement)
-    .filter(t => filterOccur === "all" ? true : (
-      filterOccur === "once" ? t.frequency === "once" :
-      filterOccur === "daily" ? t.frequency === "daily" :
-      filterOccur === "weekly" ? t.frequency === "weekly" :
-      t.frequency === "days"
-    ));
+    .filter(t => {
+      if (filterOccur === "all") return true;
+      const f = t.frequency;
+      switch (filterOccur) {
+        case "once":
+        case "daily":
+        case "weekly":
+        case "days":
+        case "monthly":
+        case "monthly_last_day":
+        case "everyXDays":
+        case "everyXWeeks":
+        case "everyXMonths":
+        case "yearly":
+          return f === filterOccur;
+        default:
+          return true;
+      }
+    })
+    .filter(t => {
+      if (!searchLC) return true;
+      return (t.title || "").toLowerCase().includes(searchLC);
+    });
+
+  const dueTodayFilter = (t) => {
+    const due = isDueTodayAdvanced(t, todayDate, todayKey, wkKey, todayDayIndex, state.meta.weekStartDay);
+    // If snoozed date has passed/equal, auto-clear label on re-entry (no lingering "Snoozed" look)
+    if (t.snoozeUntilKey && todayKey >= t.snoozeUntilKey) {
+      t.snoozeUntilKey = null;
+    }
+    return due;
+  };
 
   const tasksToday = visibleTasksBase
-    .filter(t => isDueToday(t, todayKey, wkKey, todayDayIndex))
-    .filter(t => canCompleteTaskNow(t, todayKey, wkKey, todayDayIndex)) // hide daily once completed
+    .filter(dueTodayFilter)
+    .filter(t => canCompleteNowAdvanced(t, todayDate, todayKey, wkKey, todayDayIndex, state.meta.weekStartDay))
     .sort(bySort);
 
   const tasksAll = visibleTasksBase.slice().sort(bySort);
 
   const completedToday = visibleTasksBase
     .filter(t => {
-      const due = isDueToday(t, todayKey, wkKey, todayDayIndex);
-      const canDo = canCompleteTaskNow(t, todayKey, wkKey, todayDayIndex);
-      return due && !canDo; // was due, now locked → finished for today/week
+      const due = isDueTodayAdvanced(t, todayDate, todayKey, wkKey, todayDayIndex, state.meta.weekStartDay);
+      const canDo = canCompleteNowAdvanced(t, todayDate, todayKey, wkKey, todayDayIndex, state.meta.weekStartDay);
+      return due && !canDo;
     })
     .sort(bySort);
 
@@ -771,14 +1044,17 @@ export default function App() {
 
   /* ===================== Library (Growlings index) ===================== */
 
-  // Build list of species grouped by element and evolution lines (rooted by chain)
+  // Use CSV row order if provided by loader (`order`), else DEX values
   const allSpecies = useMemo(() => {
     if (!dex.ready) return [];
-    return Object.values(dex.DEX || {});
+    if (Array.isArray(dex.order) && dex.order.length) {
+      return dex.order.map(id => dex.DEX[id]).filter(Boolean);
+    }
+    // Fallback: deterministic by id
+    return Object.values(dex.DEX || {}).sort((a,b)=> (a.csvIndex ?? 0) - (b.csvIndex ?? 0) || a.id.localeCompare(b.id));
   }, [dex]);
 
   function getRootId(sp) {
-    // Climb parentId to the top
     let cur = sp;
     const seen = new Set();
     while (cur?.parentId) {
@@ -789,27 +1065,68 @@ export default function App() {
     return cur?.id || sp.id;
   }
 
+  // Construct per-root evolutionary display order:
+  // Base → Stage1-A → all children of A (depth-first) → Stage1-B → all children of B → ...
   const libraryByElement = useMemo(() => {
-    const out = {};
-    for (const el of ELEMENTS) out[el] = new Map(); // rootId -> [species...]
+    const byEl = {};
+    for (const el of ELEMENTS) byEl[el] = new Map(); // rootId -> [species in desired order]
+
+    // Precompute children adjacency & csv index
+    const children = new Map(); // parentId -> [child species]
+    const idToSp = new Map();
     for (const sp of allSpecies) {
-      const primary = sp?.elements?.[0];
-      if (!primary) continue;
-      if (!ELEMENTS.includes(primary)) continue;
-      const root = getRootId(sp);
-      if (!out[primary].has(root)) out[primary].set(root, []);
-      out[primary].get(root).push(sp);
+      idToSp.set(sp.id, sp);
     }
-    // Sort each line by stage, then id
-    for (const el of ELEMENTS) {
-      for (const [rootId, arr] of out[el].entries()) {
-        arr.sort((a,b)=> (a.stage - b.stage) || a.id.localeCompare(b.id));
+    for (const sp of allSpecies) {
+      if (sp.parentId) {
+        const arr = children.get(sp.parentId) || [];
+        arr.push(sp);
+        children.set(sp.parentId, arr);
       }
     }
-    return out;
+    // Sort children of each parent by csv index then id for stability
+    for (const [pid, arr] of children.entries()) {
+      arr.sort((a,b)=> (a.csvIndex ?? 0) - (b.csvIndex ?? 0) || a.id.localeCompare(b.id));
+    }
+
+    function traverseFromStage1(stage1) {
+      const out = [stage1];
+      const stack = [...(children.get(stage1.id) || []).slice().reverse()]; // DFS using stack
+      while (stack.length) {
+        const node = stack.pop();
+        out.push(node);
+        const kids = children.get(node.id) || [];
+        for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+      }
+      return out;
+    }
+
+    // Build element -> root lines
+    for (const sp of allSpecies) {
+      const primary = sp?.elements?.[0];
+      if (!primary || !ELEMENTS.includes(primary)) continue;
+      const rootId = getRootId(sp);
+      if (!byEl[primary].has(rootId)) byEl[primary].set(rootId, null); // fill later
+    }
+
+    // For each root line, build proper order
+    for (const el of ELEMENTS) {
+      for (const [rootId] of byEl[el].entries()) {
+        const root = idToSp.get(rootId);
+        if (!root) { byEl[el].set(rootId, []); continue; }
+        const stage1s = (children.get(rootId) || []).slice(); // pre-sorted
+        const line = [root];
+        for (const s1 of stage1s) {
+          line.push(...traverseFromStage1(s1));
+        }
+        byEl[el].set(rootId, line);
+      }
+    }
+
+    return byEl;
   }, [allSpecies, dex]);
 
-  // ✅ Owned stats (overall + per element)
+  // Owned stats
   const ownedIds = new Set(
     Object.entries(state.meta.pokedex || {})
       .filter(([,v]) => v?.owned)
@@ -823,7 +1140,7 @@ export default function App() {
     let total = 0;
     let owned = 0;
     for (const [, line] of (libraryByElement[el] || new Map()).entries()) {
-      for (const sp of line) {
+      for (const sp of (line || [])) {
         total += 1;
         if (ownedIds.has(sp.id)) owned += 1;
       }
@@ -837,21 +1154,29 @@ export default function App() {
   const progressPct = Math.round((activeEgg.progress / activeEgg.cost) * 100);
   const eggIsFull = activeEgg.progress >= activeEgg.cost;
 
-  const speciesName = creature?.name || "Egg";
+  const speciesName = activeSpecies?.name || "Egg";
   const nickDisplay = activeCreature.nickname || speciesName;
-  const sublabel = creature
-    ? `${caps(creature.elements || [])} — ${creature.stage === 0 ? "Base" : `Stage ${creature.stage}`}`
+  const sublabel = activeSpecies
+    ? `${caps(activeSpecies.elements || [])} — ${activeSpecies.stage === 0 ? "Base" : `Stage ${activeSpecies.stage}`}`
     : "";
+
+  // Active creature level UI
+  const activeCreatureLevelInfo = activeSpecies
+    ? creatureLevelInfo(activeCreature.xpTotal || 0, activeSpecies.stage || 0)
+    : null;
+  const activeCreaturePct = activeCreatureLevelInfo
+    ? Math.max(0, Math.min(100, Math.round((activeCreatureLevelInfo.currentIntoLevel / activeCreatureLevelInfo.neededForLevel) * 100)))
+    : 0;
 
   // Nickname editing
   const [editingNick, setEditingNick] = useState(false);
-  function startEditNick() { if (creature) setEditingNick(true); }
+  function startEditNick() { if (activeSpecies) setEditingNick(true); }
   function saveNick(e) {
     const value = (e.target.value || "").trim();
     setState((s) => {
       const next = structuredClone(s);
       const slot = next.stable[next.activeTeam[next.activeIndex] ?? 0];
-      if (!slot.creature.speciesId) return s;
+      if (!slot?.creature?.speciesId) return s;
       slot.creature.nickname = value || null;
       return next;
     });
@@ -866,12 +1191,12 @@ export default function App() {
     );
   }
 
-  const currentEvos = creature?.evolutions || [];
+  const currentEvos = activeSpecies?.evolutions || [];
   const evoCount = currentEvos.length;
   const hasEvos = evoCount > 0;
   const hasAffordable = currentEvos.some((ev) => canAfford(state.candies, ev.cost));
-  const isFinal = !!creature && !hasEvos;
-  const evolveSubtitle = !creature
+  const isFinal = !!activeSpecies && !hasEvos;
+  const evolveSubtitle = !activeSpecies
     ? "Hatch a creature first."
     : isFinal
     ? "This Growling is in its final form."
@@ -957,7 +1282,7 @@ export default function App() {
                     ) : (
                       <>
                         <span>{nickDisplay}</span>
-                        {!!creature && (
+                        {!!activeSpecies && (
                           <button className="btn" style={{ padding: 4, minWidth: 0 }} onClick={startEditNick} title="Edit nickname">
                             <img src="/ui/icons/16px/icon_edit.png" width="16" height="16" alt="Edit" style={{ imageRendering: "pixelated", display: "block" }} />
                           </button>
@@ -965,25 +1290,38 @@ export default function App() {
                       </>
                     )}
                   </div>
-                  {!!creature && <div className="small" style={{ opacity: 0.8, marginTop: 2 }}>{sublabel}</div>}
+                  {!!activeSpecies && <div className="small" style={{ opacity: 0.8, marginTop: 2 }}>{sublabel}</div>}
                 </div>
 
-                <div className="sprite" style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                <div className="sprite" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap:6 }}>
                   <img
                     src={sprite}
                     alt="creature"
-                    width="64"
-                    height="64"
+                    width={SPRITE_BOX_PX}
+                    height={SPRITE_BOX_PX}
                     style={{ imageRendering: "pixelated" }}
                     onError={(e) => { e.currentTarget.src = "/egg.png"; }}
                   />
+                  {/* Level UI below sprite, fixed width to match sprite box */}
+                  {!!activeSpecies && (
+                    <div style={{ display:"grid", gap:4, justifyItems:"center", width: SPRITE_BOX_PX }}>
+                      <div className="small">Lv. {activeCreatureLevelInfo.level}</div>
+                      <div
+                        className="progress"
+                        title={`${activeCreatureLevelInfo.currentIntoLevel} / ${activeCreatureLevelInfo.neededForLevel} XP`}
+                        style={{ width: SPRITE_BOX_PX }}
+                      >
+                        <div style={{ width: `${activeCreaturePct}%` }} />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
           </div>
 
           {/* Egg/Hatch — only before hatch */}
-          {!creature && (
+          {!activeSpecies && (
             <div className="card" style={{ marginBottom: 12 }}>
               <div className="row" style={{ alignItems: "center", justifyContent: "space-between" }}>
                 <div>
@@ -1006,7 +1344,7 @@ export default function App() {
           )}
 
           {/* Evolution — only after hatch */}
-          {creature && (
+          {activeSpecies && (
             <div className="card" style={{ marginBottom: 12 }}>
               <div className="big">Evolve</div>
               <div className="small">{evolveSubtitle}</div>
@@ -1111,7 +1449,7 @@ export default function App() {
                 </div>
                 <div className="row" style={{ flexWrap:"wrap", gap:8, marginTop:8 }}>
                   {ELEMENTS.map(el => (
-                    <button key={el} className="btn" onClick={() => earnCandy(el)}>+1 {cap(el)} (dev)</button>
+                    <button key={el} className="btn" onClick={() => earnCandyDev(el)}>+5 {cap(el)} (dev)</button>
                   ))}
                   <button className="btn" onClick={addEggSlotDev}>+ Egg (dev, free)</button>
                 </div>
@@ -1126,37 +1464,43 @@ export default function App() {
         <div className="card" style={{ marginBottom: 12 }}>
           <div className="row" style={{ justifyContent:"space-between", alignItems:"center", gap: 10 }}>
             <div className="big">Tasks</div>
-            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-              {/* Occurrence filter pills */}
-              <div className="row" style={{ gap:6, flexWrap:"wrap" }}>
-                {[
-                  ["all","All"],["once","Once"],["daily","Daily"],["weekly","Weekly"],["days","Specific Days"]
-                ].map(([val,label])=>(
-                  <button
-                    key={val}
-                    className="btn"
-                    onClick={()=>setFilterOccur(val)}
-                    disabled={filterOccur===val}
-                    title={`Filter: ${label}`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
 
-              <select className="input" value={filterElement} onChange={(e)=>setFilterElement(e.target.value)}>
+            {/* Search + List Controls */}
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              <input
+                className="input"
+                style={{ minWidth: 200 }}
+                placeholder="Search tasks…"
+                value={searchDebounce}
+                onChange={(e) => setSearchDebounce(e.target.value)}
+                title="Type to filter by task title"
+              />
+              <select className="input" value={filterElement} onChange={(e)=>setFilterElement(e.target.value)} style={{ fontFamily: "var(--font-body, inherit)" }}>
                 <option value="all">All Elements</option>
                 {ELEMENTS.map(el => <option key={el} value={el}>{cap(el)}</option>)}
               </select>
-              <select className="input" value={sortMode} onChange={(e)=>setSortMode(e.target.value)}>
+              <select className="input" value={sortMode} onChange={(e)=>setSortMode(e.target.value)} style={{ fontFamily: "var(--font-body, inherit)" }}>
                 <option value="element">Sort by Element</option>
                 <option value="title">Sort by Title</option>
               </select>
+              <select className="input" value={filterOccur} onChange={(e)=>setFilterOccur(e.target.value)} style={{ fontFamily: "var(--font-body, inherit)" }}>
+                <option value="all">All Frequencies</option>
+                <option value="once">One-time</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="days">Specific Days</option>
+                <option value="monthly">Monthly (on day)</option>
+                <option value="monthly_last_day">Monthly (last day)</option>
+                <option value="everyXDays">Every X days</option>
+                <option value="everyXWeeks">Every X weeks</option>
+                <option value="everyXMonths">Every X months</option>
+                <option value="yearly">Yearly</option>
+              </select>
             </div>
           </div>
-          <div className="small">Create tasks, then complete them to earn candies, XP, and daily 💎.</div>
+          <div className="small" style={{ marginTop:4 }}>Create tasks, then complete them to earn candies, XP, and daily 💎.</div>
 
-          {/* Add task form */}
+          {/* Add task form (compact) */}
           <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
             <input
               className="input"
@@ -1166,23 +1510,29 @@ export default function App() {
               onChange={(e) => setTaskTitle(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") addTask(); }}
             />
-            <select className="input" value={taskElement} onChange={(e) => setTaskElement(e.target.value)}>
+            <select className="input" value={taskElement} onChange={(e) => setTaskElement(e.target.value)} style={{ fontFamily: "var(--font-body, inherit)" }}>
               {ELEMENTS.map(el => <option key={el} value={el}>{ELEMENT_LABEL[el]}</option>)}
             </select>
-            <select className="input" value={taskDifficulty} onChange={(e) => setTaskDifficulty(e.target.value)}>
+            <select className="input" value={taskDifficulty} onChange={(e) => setTaskDifficulty(e.target.value)} style={{ fontFamily: "var(--font-body, inherit)" }}>
               <option value="easy">Easy (5 XP)</option>
               <option value="med">Medium (10 XP)</option>
               <option value="hard">Hard (20 XP)</option>
             </select>
-            <select className="input" value={taskFrequency} onChange={(e) => setTaskFrequency(e.target.value)}>
+            <select className="input" value={taskFrequency} onChange={(e) => setTaskFrequency(e.target.value)} style={{ fontFamily: "var(--font-body, inherit)" }}>
               <option value="daily">Daily</option>
               <option value="weekly">Weekly</option>
               <option value="days">Specific Days</option>
               <option value="once">One-time</option>
+              <option value="monthly">Monthly (on day)</option>
+              <option value="monthly_last_day">Monthly (last day)</option>
+              <option value="everyXDays">Every X days</option>
+              <option value="everyXWeeks">Every X weeks</option>
+              <option value="everyXMonths">Every X months</option>
+              <option value="yearly">Yearly</option>
             </select>
 
             {taskFrequency === "weekly" && (
-              <select className="input" value={taskWeeklyDay ?? ""} onChange={(e)=>setTaskWeeklyDay(e.target.value===""?null:Number(e.target.value))}>
+              <select className="input" value={taskWeeklyDay ?? ""} onChange={(e)=>setTaskWeeklyDay(e.target.value===""?null:Number(e.target.value))} style={{ fontFamily: "var(--font-body, inherit)" }}>
                 <option value="">Any day this week</option>
                 {DAY_SHORT.map((d,i)=><option key={i} value={i}>{d}</option>)}
               </select>
@@ -1204,10 +1554,69 @@ export default function App() {
                 ))}
               </div>
             )}
+
+            {taskFrequency === "monthly" && (
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={31}
+                value={taskMonthlyDay}
+                onChange={(e)=>setTaskMonthlyDay(clamp(Number(e.target.value)||1,1,31))}
+                style={{ width:80 }}
+                title="Day of month (1–31)"
+              />
+            )}
+
+            {taskFrequency.startsWith("everyX") && (
+              <>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  value={taskEveryX}
+                  onChange={(e)=>setTaskEveryX(Math.max(1, Number(e.target.value)||1))}
+                  style={{ width:90 }}
+                  title="Interval (X)"
+                />
+                <label className="small" style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
+                  <span>Start On:</span>
+                  <input
+                    className="input"
+                    type="date"
+                    value={taskAnchorDayKey}
+                    onChange={(e)=>setTaskAnchorDayKey(e.target.value || localDateStr(new Date()))}
+                    style={{ width:160 }}
+                    title="Anchor date for the every-X schedule"
+                  />
+                </label>
+              </>
+            )}
+
+            {taskFrequency === "yearly" && (
+              <>
+                <select className="input" value={taskYearlyMonth} onChange={(e)=>setTaskYearlyMonth(Number(e.target.value))} style={{ fontFamily: "var(--font-body, inherit)" }}>
+                  {["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].map((m,i)=>(
+                    <option key={i} value={i}>{m}</option>
+                  ))}
+                </select>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={31}
+                  value={taskYearlyDay}
+                  onChange={(e)=>setTaskYearlyDay(clamp(Number(e.target.value)||1,1,31))}
+                  style={{ width:80 }}
+                  title="Day of month"
+                />
+              </>
+            )}
+
             <button className="btn" onClick={addTask}>Add Task</button>
           </div>
 
-          {/* ✅ Suggestions (collapsed by default) */}
+          {/* Suggestions (collapsed by default) */}
           <div className="card" style={{ marginTop:12 }}>
             <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
               <div className="small" style={{ fontWeight:700 }}>
@@ -1227,8 +1636,6 @@ export default function App() {
                     title="Add this suggestion"
                     onClick={()=>{
                       setTaskTitle(title);
-                      // You can auto-add on click by uncommenting:
-                      // setTimeout(addTask, 0);
                     }}
                   >
                     + {title}
@@ -1265,12 +1672,12 @@ export default function App() {
                   <div className="small" style={{ opacity:0.8 }}>Nothing here yet.</div>
                 ) : completedToday.map((t) => (
                   editingTaskId === t.id && editDraft
-                  ? renderTaskRow(t) // reuse editor UI
+                  ? renderTaskRow(t)
                   : (
                     <div
                       key={t.id}
                       className="row"
-                      onClick={()=>startEditTask(t)} // click-to-expand editor
+                      onClick={()=>startEditTask(t)}
                       style={{
                         justifyContent:"space-between",
                         alignItems:"center",
@@ -1285,7 +1692,7 @@ export default function App() {
                       </div>
                       <div className="row" style={{ gap:6, flexWrap:"wrap" }}>
                         <span className="badge" style={{ background: ELEMENT_BADGE_BG[t.element] }}>{cap(t.element)}</span>
-                        <span className="badge">{t.frequency === "weekly" ? "This week done" : "Done today"}</span>
+                        <span className="badge">Done</span>
                       </div>
                     </div>
                   )
@@ -1316,10 +1723,10 @@ export default function App() {
         <div className="card" style={{ marginBottom:12 }}>
           <div className="big">Library</div>
           <div className="small" style={{ marginTop:6, opacity:0.9 }}>
-            Track creatures you’ve seen and owned. Unknown species show as silhouettes until owned.
+            Track creatures you’ve collected. Unknown species show as silhouettes until owned.
           </div>
 
-          {/* ✅ Overall summary */}
+          {/* Overall summary */}
           <div className="row" style={{ gap:8, flexWrap:"wrap", marginTop:10 }}>
             <span className="badge">
               Overall: {overallOwned}/{overallTotal} ({overallPct}%)
@@ -1337,9 +1744,8 @@ export default function App() {
                   {[...libraryByElement[el].entries()].map(([rootId, line])=>{
                     return (
                       <div key={rootId} className="row" style={{ gap:8, alignItems:"center", flexWrap:"wrap" }}>
-                        {line.map(sp=>{
+                        {(line || []).map(sp=>{
                           const owned = !!state.meta.pokedex?.[sp.id]?.owned;
-                          const seen = !!state.meta.pokedex?.[sp.id]?.seen;
                           const art = sp?.sprite || "/egg.png";
                           return (
                             <div key={sp.id} style={{
@@ -1360,9 +1766,6 @@ export default function App() {
                               <div className="small" style={{ marginTop:4, textAlign:"center" }}>
                                 {owned ? sp.name : "???"}
                               </div>
-                              <div className="small" style={{ opacity:0.7 }}>
-                                {seen ? (owned ? "Owned" : "Seen") : "—"}
-                              </div>
                             </div>
                           );
                         })}
@@ -1376,7 +1779,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Settings (floating ⚙️ opens this card inline) */}
+      {/* Settings */}
       {showSettings && (
         <div className="card" style={{ marginBottom: 12 }}>
           <div className="big">Settings</div>
@@ -1386,13 +1789,13 @@ export default function App() {
               className="input"
               value={state.meta.weekStartDay}
               onChange={(e)=>setState(s=>({ ...s, meta:{ ...s.meta, weekStartDay: Number(e.target.value) } }))}
+              style={{ fontFamily: "var(--font-body, inherit)" }}
             >
               {DAY_SHORT.map((d,i)=><option key={i} value={i}>{d}</option>)}
             </select>
           </div>
 
           <div className="row" style={{ marginTop:8, gap:8, flexWrap:"wrap" }}>
-            {/* Links moved to persistent footer */}
             <button
               className="btn"
               onClick={()=>setState(s=>({ ...s, meta:{ ...s.meta, onboardingDone: false } }))}
@@ -1404,7 +1807,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ✅ Persistent Footer */}
+      {/* Footer */}
       <footer
         style={{
           marginTop:20,
@@ -1455,7 +1858,7 @@ export default function App() {
         }}>
           <div className="card" style={{ maxWidth: 420, width: "90%", padding: 16 }}>
             <div className="big" style={{ marginBottom: 6 }}>
-              {creature?.name} can evolve!
+              {activeSpecies?.name} can evolve!
             </div>
             <div className="small" style={{ marginBottom: 12, opacity: 0.9 }}>
               Choose a path:
@@ -1499,7 +1902,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ✅ Evolution Congrats Modal */}
+      {/* Evolution Congrats Modal */}
       {showEvoCongrats && (
         <div style={{
           position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
@@ -1538,7 +1941,46 @@ export default function App() {
         </div>
       )}
 
-      {/* Level Up Toast */}
+      {/* Hatch Congrats Modal */}
+      {showHatchCongrats && (
+        <div style={{
+          position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
+          display:"flex", alignItems:"center", justifyContent:"center", zIndex:10000
+        }}>
+          <div className="card" style={{ maxWidth:460, width:"92%", padding:16, textAlign:"center" }}>
+            <div className="big">Your egg hatched!</div>
+            <div className="small" style={{ marginTop:6 }}>
+              It hatched into <strong>{showHatchCongrats.to?.name || "a new creature"}</strong> 🎉
+            </div>
+
+            <div className="row" style={{ gap:16, alignItems:"center", justifyContent:"center", marginTop:12 }}>
+              <div style={{ display:"grid", justifyItems:"center" }}>
+                <img
+                  src={"/egg.png"}
+                  width="64" height="64" alt="Egg"
+                  style={{ imageRendering:"pixelated" }}
+                />
+                <div className="small" style={{ opacity:0.85, marginTop:4 }}>Egg</div>
+              </div>
+              <div className="big">→</div>
+              <div style={{ display:"grid", justifyItems:"center" }}>
+                <img
+                  src={showHatchCongrats.to?.sprite || "/egg.png"}
+                  width="64" height="64" alt={showHatchCongrats.to?.name || "New"}
+                  style={{ imageRendering:"pixelated" }}
+                />
+                <div className="small" style={{ opacity:0.85, marginTop:4 }}>{showHatchCongrats.to?.name || "—"}</div>
+              </div>
+            </div>
+
+            <div className="row" style={{ marginTop:12, justifyContent:"center" }}>
+              <button className="btn" onClick={()=>setShowHatchCongrats(null)}>Sweet!</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Trainer Level Up Toast */}
       {levelToast && (
         <div style={{
           position:"fixed", inset:0, background:"rgba(0,0,0,0.5)",
@@ -1554,6 +1996,25 @@ export default function App() {
             </div>
             <div className="row" style={{ marginTop:12, justifyContent:"center" }}>
               <button className="btn" onClick={()=>setLevelToast(null)}>Nice!</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Creature Level Up Toast (queued) */}
+      {creatureLevelToast && (
+        <div style={{
+          position:"fixed", inset:0, background:"rgba(0,0,0,0.5)",
+          display:"flex", alignItems:"center", justifyContent:"center", zIndex:10001
+        }}>
+          <div className="card" style={{ maxWidth:380, width:"90%", padding:16, textAlign:"center" }}>
+            <div className="big">Level Up!</div>
+            <div className="row" style={{ gap:10, alignItems:"center", justifyContent:"center", marginTop:8 }}>
+              <img src={creatureLevelToast.sprite} width="48" height="48" style={{ imageRendering:"pixelated" }} alt="Creature" />
+              <div className="small"><strong>{creatureLevelToast.name}</strong> grew to <strong>Level {creatureLevelToast.toLevel}</strong>! 🎉</div>
+            </div>
+            <div className="row" style={{ marginTop:12, justifyContent:"center" }}>
+              <button className="btn" onClick={dismissCreatureToast}>Sweet!</button>
             </div>
           </div>
         </div>
@@ -1617,50 +2078,80 @@ export default function App() {
         </div>
       )}
 
-      {/* Manage Team Modal */}
+      {/* Manage Team Modal — paged icons (30/page) with scroll fallback */}
       {showManageTeam && (
         <div style={{
           position:"fixed", inset:0, background:"rgba(0,0,0,0.5)",
           display:"flex", alignItems:"center", justifyContent:"center", zIndex:9999
         }}>
-          <div className="card" style={{ maxWidth:520, width:"95%", padding:16 }}>
-            <div className="big">Manage Team (max 6)</div>
-            <div className="small" style={{ marginTop:6, opacity:0.9 }}>
-              Select which eggs/creatures show on your home carousel.
+          <div className="card" style={{ maxWidth:560, width:"95%", padding:16, display:"grid", gap:10 }}>
+            <div className="row" style={{ justifyContent:"space-between", alignItems:"center" }}>
+              <div className="big">Manage Team (max 6)</div>
+              <div className="small">Selected: {state.activeTeam.length} / 6</div>
             </div>
-            <div style={{
-              marginTop:12, display:"grid",
-              gridTemplateColumns:"repeat(auto-fill, minmax(120px, 1fr))",
-              gap:8
-            }}>
-              {state.stable.map((slot, idx) => {
-                const chosen = state.activeTeam.includes(idx);
-                const sp = slot.creature?.speciesId ? dex.getSpecies(slot.creature.speciesId) : null;
-                const art = sp?.sprite || "/egg.png";
-                const label = sp?.name || "Egg";
-                return (
-                  <button
-                    key={idx}
-                    className="btn"
-                    onClick={() => toggleTeamMember(idx)}
-                    title={chosen ? "Remove from team" : "Add to team"}
-                    style={{
-                      display:"grid", gap:6, justifyItems:"center",
-                      border: chosen ? "2px solid #8ad" : "1px solid rgba(255,255,255,0.12)",
-                      borderRadius: 10, padding: 10
-                    }}
-                  >
-                    <img src={art} width="32" height="32" style={{ imageRendering:"pixelated" }} alt={label} />
-                    <div className="small" style={{ fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:100 }}>
-                      {label}
-                    </div>
-                    <div className="small" style={{ opacity:0.8 }}>{chosen ? "Selected" : "Tap to select"}</div>
-                  </button>
-                );
-              })}
+            <div className="small" style={{ opacity:0.9 }}>
+              Tap icons to toggle selection. Use arrows to switch pages of your stable.
             </div>
-            <div className="row" style={{ marginTop:12, justifyContent:"flex-end", gap:8 }}>
-              <div className="small" style={{ opacity:0.85 }}>Selected: {state.activeTeam.length} / 6</div>
+
+            <div className="row" style={{ justifyContent:"space-between", alignItems:"center", gap:8 }}>
+              <button className="btn" onClick={()=>setTeamPage(p=>Math.max(0, p-1))} disabled={teamPage===0}>‹</button>
+              <div className="small">Page {teamPage+1} / {Math.max(1, Math.ceil(state.stable.length / TEAM_PAGE_SIZE))}</div>
+              <button className="btn" onClick={()=>setTeamPage(p=>{
+                const maxP = Math.max(0, Math.ceil(state.stable.length / TEAM_PAGE_SIZE)-1);
+                return Math.min(maxP, p+1);
+              })} disabled={teamPage >= Math.ceil(state.stable.length / TEAM_PAGE_SIZE)-1}>›</button>
+            </div>
+
+            <div style={{ maxHeight: "50vh", overflow: "auto", paddingRight:4 }}>
+              <div
+                style={{
+                  display:"grid",
+                  gridTemplateColumns:"repeat(6, 1fr)",
+                  gap:8,
+                }}
+              >
+                {state.stable.slice(teamPage*TEAM_PAGE_SIZE, (teamPage+1)*TEAM_PAGE_SIZE).map((slot, i) => {
+                  const idx = teamPage*TEAM_PAGE_SIZE + i;
+                  const chosenPos = state.activeTeam.indexOf(idx);
+                  const chosen = chosenPos >= 0;
+                  const sp = slot.creature?.speciesId ? dex.getSpecies(slot.creature.speciesId) : null;
+                  const art = sp?.sprite || "/egg.png";
+                  return (
+                    <button
+                      key={idx}
+                      className="btn"
+                      onClick={() => toggleTeamMember(idx)}
+                      title={chosen ? "Remove from team" : "Add to team"}
+                      style={{
+                        width:80, height:80,
+                        padding:6,
+                        borderRadius:10,
+                        border: chosen ? "2px solid #8ad" : "1px solid rgba(255,255,255,0.12)",
+                        display:"grid",
+                        placeItems:"center",
+                        position:"relative"
+                      }}
+                    >
+                      <img src={art} width="48" height="48" style={{ imageRendering:"pixelated" }} alt={sp?.name || "Egg"} />
+                      {chosen && (
+                        <div
+                          className="small"
+                          style={{
+                            position:"absolute", top:4, left:4,
+                            background:"rgba(20,20,40,0.8)",
+                            padding:"1px 5px", borderRadius:6, border:"1px solid rgba(255,255,255,0.2)"
+                          }}
+                        >
+                          {chosenPos+1}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="row" style={{ justifyContent:"flex-end" }}>
               <button className="btn" onClick={()=>setShowManageTeam(false)}>Done</button>
             </div>
           </div>
@@ -1674,18 +2165,18 @@ export default function App() {
           display:"flex", alignItems:"center", justifyContent:"center", zIndex:9999
         }}>
           <div className="card" style={{ maxWidth:420, width:"95%", padding:16 }}>
-            <div className="big">Profile</div>
-            {creature ? (
+            <div className="big">Summary</div>
+            {activeSpecies ? (
               <>
                 <div className="row" style={{ gap:10, alignItems:"center", marginTop:8 }}>
-                  <img src={sprite} width="48" height="48" style={{ imageRendering:"pixelated" }} alt={creature.name} />
+                  <img src={sprite} width="48" height="48" style={{ imageRendering:"pixelated" }} alt={activeSpecies.name} />
                   <div>
                     <div className="small" style={{ fontWeight:700 }}>{nickDisplay}</div>
-                    <div className="small" style={{ opacity:0.8 }}>{caps(creature.elements || [])}</div>
+                    <div className="small" style={{ opacity:0.8 }}>{caps(activeSpecies.elements || [])}</div>
                   </div>
                 </div>
                 <div className="small" style={{ marginTop:10 }}>
-                  Total Creature XP: <strong>{activeCreature.xpTotal || 0}</strong>
+                  Lv. {activeCreatureLevelInfo.level} — {activeCreatureLevelInfo.currentIntoLevel} / {activeCreatureLevelInfo.neededForLevel} XP
                 </div>
                 <div className="row" style={{ flexWrap:"wrap", gap:8, marginTop:6 }}>
                   {ELEMENTS.map(el=>(
@@ -1702,12 +2193,30 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Skip Modal */}
+      {skipTarget && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:9999 }}>
+          <div className="card" style={{ maxWidth:360, width:"90%", padding:16 }}>
+            <div className="big">Skip this occurrence?</div>
+            <div className="small" style={{ marginTop:6, opacity:0.9 }}>Choose when to see it again:</div>
+            <div style={{ display:"grid", gap:8, marginTop:10 }}>
+              {skipTarget.choices.map((c, i)=>(
+                <button key={i} className="btn" onClick={()=>performSkip(c.key)}>{c.label}</button>
+              ))}
+            </div>
+            <div className="row" style={{ marginTop:10, justifyContent:"flex-end" }}>
+              <button className="btn" onClick={()=>setSkipTarget(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
-  /* ===== Task Row Renderer (stacked text, element-colored badge) ===== */
+  /* ===== Task Row Renderer ===== */
   function renderTaskRow(t) {
-    const canDo = canCompleteTaskNow(t, todayKey, wkKey, todayDayIndex);
+    const canDo = canCompleteNowAdvanced(t, todayDate, todayKey, wkKey, todayDayIndex, state.meta.weekStartDay);
 
     // Edit mode
     if (editingTaskId === t.id && editDraft) {
@@ -1728,24 +2237,30 @@ export default function App() {
               onChange={(e)=>setEditDraft(d=>({ ...d, title: e.target.value }))}
             />
             <div className="row" style={{ gap:6, flexWrap:"wrap" }}>
-              <select className="input" value={editDraft.element} onChange={(e)=>setEditDraft(d=>({ ...d, element: e.target.value }))}>
+              <select className="input" value={editDraft.element} onChange={(e)=>setEditDraft(d=>({ ...d, element: e.target.value }))} style={{ fontFamily: "var(--font-body, inherit)" }}>
                 {ELEMENTS.map(el => <option key={el} value={el}>{ELEMENT_LABEL[el]}</option>)}
               </select>
-              <select className="input" value={editDraft.difficulty} onChange={(e)=>setEditDraft(d=>({ ...d, difficulty: e.target.value }))}>
+              <select className="input" value={editDraft.difficulty} onChange={(e)=>setEditDraft(d=>({ ...d, difficulty: e.target.value }))} style={{ fontFamily: "var(--font-body, inherit)" }}>
                 <option value="easy">Easy (5 XP)</option>
                 <option value="med">Medium (10 XP)</option>
                 <option value="hard">Hard (20 XP)</option>
               </select>
-              <select className="input" value={editDraft.frequency} onChange={(e)=>setEditDraft(d=>({ ...d, frequency: e.target.value }))}>
+              <select className="input" value={editDraft.frequency} onChange={(e)=>setEditDraft(d=>({ ...d, frequency: e.target.value }))} style={{ fontFamily: "var(--font-body, inherit)" }}>
                 <option value="daily">Daily</option>
                 <option value="weekly">Weekly</option>
                 <option value="days">Specific Days</option>
                 <option value="once">One-time</option>
+                <option value="monthly">Monthly (on day)</option>
+                <option value="monthly_last_day">Monthly (last day)</option>
+                <option value="everyXDays">Every X days</option>
+                <option value="everyXWeeks">Every X weeks</option>
+                <option value="everyXMonths">Every X months</option>
+                <option value="yearly">Yearly</option>
               </select>
             </div>
 
             {editDraft.frequency === "weekly" && (
-              <select className="input" value={editDraft.weeklyDay ?? ""} onChange={(e)=>setEditDraft(d=>({ ...d, weeklyDay: e.target.value===""?null:Number(e.target.value) }))}>
+              <select className="input" value={editDraft.weeklyDay ?? ""} onChange={(e)=>setEditDraft(d=>({ ...d, weeklyDay: e.target.value===""?null:Number(e.target.value) }))} style={{ fontFamily: "var(--font-body, inherit)" }}>
                 <option value="">Any day this week</option>
                 {DAY_SHORT.map((d,i)=><option key={i} value={i}>{d}</option>)}
               </select>
@@ -1761,7 +2276,12 @@ export default function App() {
                       onChange={()=>{
                         setEditDraft(ed=>{
                           const on = ed.daysOfWeek?.includes(i);
-                          return { ...ed, daysOfWeek: on ? ed.daysOfWeek.filter(x=>x!==i) : [...(ed.daysOfWeek||[]), i] };
+                                                    return {
+                            ...ed,
+                            daysOfWeek: on
+                              ? ed.daysOfWeek.filter(x => x !== i)
+                              : [...(ed.daysOfWeek || []), i],
+                          };
                         });
                       }}
                     />
@@ -1770,55 +2290,163 @@ export default function App() {
                 ))}
               </div>
             )}
+
+            {editDraft.frequency === "monthly" && (
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={31}
+                value={editDraft.monthlyDay}
+                onChange={(e)=>setEditDraft(d=>({ ...d, monthlyDay: clamp(Number(e.target.value)||1,1,31) }))}
+                style={{ width: 90 }}
+                title="Day of month (1–31)"
+              />
+            )}
+
+            {editDraft.frequency && editDraft.frequency.startsWith("everyX") && (
+              <div className="row" style={{ gap:6, flexWrap:"wrap" }}>
+                <label className="small" style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
+                  <span>X:</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min={1}
+                    value={editDraft.everyX}
+                    onChange={(e)=>setEditDraft(d=>({ ...d, everyX: Math.max(1, Number(e.target.value)||1) }))}
+                    style={{ width: 90 }}
+                    title="Interval (X)"
+                  />
+                </label>
+                <label className="small" style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
+                  <span>Start On:</span>
+                  <input
+                    className="input"
+                    type="date"
+                    value={editDraft.anchorDayKey}
+                    onChange={(e)=>setEditDraft(d=>({ ...d, anchorDayKey: e.target.value || localDateStr(new Date()) }))}
+                    style={{ width: 160 }}
+                    title="Anchor date for the every-X schedule"
+                  />
+                </label>
+              </div>
+            )}
+
+            {editDraft.frequency === "yearly" && (
+              <div className="row" style={{ gap:6, flexWrap:"wrap" }}>
+                <select
+                  className="input"
+                  value={editDraft.yearlyMonth}
+                  onChange={(e)=>setEditDraft(d=>({ ...d, yearlyMonth: Number(e.target.value) }))}
+                  style={{ fontFamily: "var(--font-body, inherit)" }}
+                >
+                  {["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].map((m,i)=>(
+                    <option key={i} value={i}>{m}</option>
+                  ))}
+                </select>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={31}
+                  value={editDraft.yearlyDay}
+                  onChange={(e)=>setEditDraft(d=>({ ...d, yearlyDay: clamp(Number(e.target.value)||1,1,31) }))}
+                  style={{ width: 90 }}
+                  title="Day of month"
+                />
+              </div>
+            )}
           </div>
-          <div className="row" style={{ gap:6 }}>
+
+          <div className="row" style={{ gap:6, alignItems:"center" }}>
             <button className="btn" onClick={saveEdit}>Save</button>
             <button className="btn" onClick={cancelEdit}>Cancel</button>
+            <button
+              className="btn"
+              onClick={()=>{
+                if (confirm("Delete this task? This cannot be undone.")) {
+                  deleteTask(t.id);
+                  cancelEdit();
+                }
+              }}
+              title="Delete task"
+            >
+              Delete
+            </button>
           </div>
         </div>
       );
     }
 
-    // Read-only row
+    // View mode
+    const freqText = (() => {
+      switch (t.frequency) {
+        case "once": return "One-time";
+        case "daily": return "Daily";
+        case "weekly": return t.weeklyDay == null ? "Weekly" : `Weekly (${DAY_SHORT[t.weeklyDay]})`;
+        case "days": return `Days: ${(t.daysOfWeek||[]).map(i=>DAY_SHORT[i]).join(", ") || "—"}`;
+        case "monthly": return t.monthlyDay ? `Monthly (day ${t.monthlyDay})` : "Monthly";
+        case "monthly_last_day": return "Monthly (last day)";
+        case "everyXDays": return `Every ${t.everyX} day${t.everyX===1?"":"s"}`;
+        case "everyXWeeks": return `Every ${t.everyX} week${t.everyX===1?"":"s"}`;
+        case "everyXMonths": return `Every ${t.everyX} month${t.everyX===1?"":"s"}`;
+        case "yearly": return t.yearlyMonth!=null && t.yearlyDay!=null
+          ? `Yearly (${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][t.yearlyMonth]} ${t.yearlyDay})`
+          : "Yearly";
+        default: return "—";
+      }
+    })();
+
+    const snoozed = !!t.snoozeUntilKey && todayKey < t.snoozeUntilKey;
+
     return (
-      <div key={t.id} className="row" style={{
-        alignItems: "stretch",
-        justifyContent: "space-between",
-        padding: "8px 10px",
-        border: "1px solid rgba(255,255,255,0.12)",
-        borderRadius: 8,
-        gap: 10,
-        flexWrap: "wrap"
-      }}>
-        <div style={{ display:"grid", gap:4, minWidth: 240, flex:1 }}>
-          <div className="small" style={{ fontWeight: 700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+      <div
+        key={t.id}
+        className="row"
+        style={{
+          justifyContent:"space-between",
+          alignItems:"center",
+          padding:"6px 10px",
+          border:"1px solid rgba(255,255,255,0.12)",
+          borderRadius:8,
+          gap:8,
+          flexWrap:"wrap"
+        }}
+      >
+        <div style={{ minWidth: 200, flex: 1 }}>
+          <div className="small" style={{ fontWeight:700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
             {t.title}
           </div>
-          <div className="small" style={{ opacity: 0.9, display:"flex", flexWrap:"wrap", gap:6 }}>
+          <div className="row" style={{ gap:6, marginTop:4, flexWrap:"wrap" }}>
             <span className="badge" style={{ background: ELEMENT_BADGE_BG[t.element] }}>{cap(t.element)}</span>
-            <span className="badge">{cap(t.difficulty)} • {XP_BY_DIFFICULTY[t.difficulty]} XP</span>
-            <span className="badge">
-              {t.frequency === "daily" ? "Daily"
-                : t.frequency === "weekly" ? (t.weeklyDay==null ? "Weekly" : `Weekly: ${DAY_SHORT[t.weeklyDay]}`)
-                : t.frequency === "once" ? "One-time"
-                : `Days: ${t.daysOfWeek.map(i=>DAY_SHORT[i]).join(", ") || "—"}`}
-            </span>
-            <span className="badge">Rewards: 1 {cap(t.element)} Candy</span>
+            <span className="badge">{freqText}</span>
+            {snoozed && <span className="badge">Snoozed until {t.snoozeUntilKey}</span>}
+            {!canDo && isDueTodayAdvanced(t, todayDate, todayKey, wkKey, todayDayIndex, state.meta.weekStartDay) && (
+              <span className="badge">Done Today</span>
+            )}
           </div>
-          {!canDo && (
-            <div className="small" style={{ opacity: 0.7 }}>
-              {t.frequency === "once" ? "Completed."
-                : t.frequency === "weekly" ? "Completed this week."
-                : "Completed today."}
-            </div>
-          )}
         </div>
-        <div className="row" style={{ gap: 6, alignItems:"center" }}>
-          <button className="btn" onClick={() => completeTask(t.id)} disabled={!canDo}>
-            {canDo ? "Complete" : "Locked"}
+
+        <div className="row" style={{ gap:6, flexWrap:"wrap" }}>
+          <button
+            className="btn"
+            onClick={()=>canDo && completeTask(t.id)}
+            disabled={!canDo}
+            title={canDo ? "Complete task" : "Not available again yet"}
+          >
+            {canDo ? "Complete" : "—"}
           </button>
-          <button className="btn" onClick={() => startEditTask(t)}>Edit</button>
-          <button className="btn" onClick={() => deleteTask(t.id)} title="Delete task">Delete</button>
+          <button className="btn" onClick={()=>requestSkip(t)} title="Skip this occurrence">Skip</button>
+          <button className="btn" onClick={()=>startEditTask(t)} title="Edit task">Edit</button>
+          <button
+            className="btn"
+            onClick={()=>{
+              if (confirm("Delete this task? This cannot be undone.")) deleteTask(t.id);
+            }}
+            title="Delete task"
+          >
+            Delete
+          </button>
         </div>
       </div>
     );
